@@ -1,0 +1,225 @@
+"""
+app/services/research_service.py
+
+Business logic for the Research Runs module.
+Routes call service methods; service calls repository methods.
+No SQLAlchemy, no HTTP, no response schemas here.
+"""
+import asyncio
+import hashlib
+import json
+import logging
+import math
+import uuid
+from typing import Optional
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.research_run import ResearchRun, RunStatus
+from app.models.user import User, UserRole
+from app.repositories.research_repository import ResearchRepository
+from app.schemas.research import (
+    ResearchRunCreate,
+    ResearchRunFilters,
+    ResearchRunList,
+    ResearchRunSummary,
+)
+from app.services.pipeline.orchestrator import PipelineOrchestrator
+from app.utils.exceptions import AppException, ForbiddenError, NotFoundError
+
+logger = logging.getLogger(__name__)
+
+
+class ResearchService:
+    """Orchestrates all research-run business operations."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._repo = ResearchRepository(session)
+
+    # ── Cache key ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def generate_cache_key(
+        compound_name: str,
+        selected_sources: list[str],
+        publication_filter: dict | None,
+    ) -> str:
+        """
+        Produce a deterministic 32-char hex cache key from the run's
+        significant parameters. Two runs with the same compound / sources /
+        filter produce the same key and can be de-duplicated.
+        """
+        canonical = {
+            "compound": compound_name.strip().lower(),
+            "sources": sorted(selected_sources),
+            "filter": publication_filter or {},
+        }
+        raw = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+    # ── Create ────────────────────────────────────────────────────────────────
+
+    async def create_run(
+        self, data: ResearchRunCreate, current_user: User
+    ) -> ResearchRun:
+        """
+        Create a new ResearchRun for the authenticated user.
+
+        De-duplication: if a non-failed run with an identical cache key
+        already exists for this user, return it instead of creating a new one.
+        """
+        cache_key = self.generate_cache_key(
+            data.compound_name,
+            data.selected_sources,
+            data.publication_filter,
+        )
+
+        existing = await self._repo.get_by_cache_key(cache_key)
+        # if existing and existing.created_by == current_user.id and existing.status == RunStatus.COMPLETED:
+        #     logger.info(
+        #         "Cache hit — returning completed run %s for user %s",
+        #         existing.id,
+        #         current_user.id,
+        #     )
+        #     return existing
+
+        run = ResearchRun(
+            compound_name=data.compound_name,
+            competitors=data.competitors,
+            mentioned_websites=data.mentioned_websites,
+            publication_filter=data.publication_filter,
+            selected_sources=data.selected_sources,
+            status=RunStatus.PENDING,
+            cache_key=cache_key,
+            report_version=1,
+            created_by=current_user.id,
+        )
+        run = await self._repo.create(run)
+        logger.info("Created ResearchRun %s for user %s", run.id, current_user.id)
+
+        # Spawn background pipeline
+        orchestrator = PipelineOrchestrator(run.id)
+        asyncio.create_task(orchestrator.execute())
+
+        return run
+
+    # ── List ──────────────────────────────────────────────────────────────────
+
+    async def list_runs(
+        self, filters: ResearchRunFilters, current_user: User
+    ) -> ResearchRunList:
+        """
+        Return a paginated list of runs.
+        - ADMIN users can list all runs and filter by user_id.
+        - SCIENTIST users only see their own runs (user_id filter is ignored).
+        """
+        enforce_user_id: uuid.UUID | None = None
+        if current_user.role != UserRole.ADMIN:
+            enforce_user_id = current_user.id
+
+        runs, total = await self._repo.list_active(
+            filters=filters, enforce_user_id=enforce_user_id
+        )
+
+        pages = max(1, math.ceil(total / filters.page_size))
+        items = [ResearchRunSummary.model_validate(r) for r in runs]
+
+        return ResearchRunList(
+            items=items,
+            total=total,
+            page=filters.page,
+            page_size=filters.page_size,
+            pages=pages,
+        )
+
+    # ── Get single ────────────────────────────────────────────────────────────
+
+    async def get_run(
+        self, run_id: uuid.UUID, current_user: User
+    ) -> ResearchRun:
+        """
+        Fetch a single non-deleted run.
+        - ADMIN users can access any run.
+        - SCIENTIST users can only access their own.
+        """
+        if current_user.role == UserRole.ADMIN:
+            run = await self._repo.get_active_by_id(run_id)
+        else:
+            run = await self._repo.get_active_by_id_and_user(run_id, current_user.id)
+
+        if run is None:
+            raise NotFoundError(resource="ResearchRun")
+
+        return run
+
+    # ── Delete (soft) ─────────────────────────────────────────────────────────
+
+    async def delete_run(
+        self, run_id: uuid.UUID, current_user: User
+    ) -> None:
+        """
+        Soft-delete a run.
+        - ADMIN users can delete any run.
+        - SCIENTIST users can only delete their own.
+        - Cannot delete a run that is actively processing.
+        """
+        run = await self.get_run(run_id, current_user)
+
+        if run.is_active:
+            raise AppException(
+                status_code=409,
+                code="RUN_IN_PROGRESS",
+                message=(
+                    f"Cannot delete a run with status '{run.status.value}'. "
+                    "Cancel it first."
+                ),
+            )
+
+        await self._repo.soft_delete(run)
+        logger.info(
+            "Soft-deleted ResearchRun %s by user %s", run_id, current_user.id
+        )
+
+    # ── Refresh ───────────────────────────────────────────────────────────────
+
+    async def refresh_run(
+        self, run_id: uuid.UUID, current_user: User
+    ) -> ResearchRun:
+        """
+        Re-queue a completed / failed / cancelled run.
+
+        Placeholder — Phase 2 will enqueue a background task.
+        Currently just resets the status to PENDING and bumps report_version.
+        Only terminal-state runs can be refreshed.
+        """
+        run = await self.get_run(run_id, current_user)
+
+        if not run.is_terminal:
+            raise AppException(
+                status_code=409,
+                code="RUN_NOT_TERMINAL",
+                message=(
+                    f"Can only refresh runs in a terminal state "
+                    f"(COMPLETED, FAILED, CANCELLED). Current status: {run.status.value}."
+                ),
+            )
+
+        run.status = RunStatus.PENDING
+        run.report_version += 1
+        run.cache_key = self.generate_cache_key(
+            run.compound_name, run.selected_sources or [], run.publication_filter
+        )
+
+        run = await self._repo.update(run)
+        logger.info(
+            "Refreshed ResearchRun %s → v%s by user %s",
+            run_id,
+            run.report_version,
+            current_user.id,
+        )
+
+        # Spawn background pipeline
+        orchestrator = PipelineOrchestrator(run.id)
+        asyncio.create_task(orchestrator.execute())
+
+        return run
