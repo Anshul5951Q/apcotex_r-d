@@ -45,8 +45,12 @@ class ResearchRunCreate(BaseModel):
         default_factory=list,
         description='Data sources to query, e.g. ["google_patents", "serper_web"].',
     )
+    jurisdictions: list[str] = Field(
+        default_factory=list,
+        description='Patent jurisdictions to search, e.g. ["US", "EP", "IN"].',
+    )
 
-    @field_validator("competitors", "mentioned_websites", "selected_sources", mode="before")
+    @field_validator("competitors", "mentioned_websites", "selected_sources", "jurisdictions", mode="before")
     @classmethod
     def strip_empty_strings(cls, v: list) -> list:
         return [item for item in v if isinstance(item, str) and item.strip()]
@@ -63,6 +67,7 @@ class ResearchRunResponse(BaseModel):
     mentioned_websites: list[str]
     publication_filter: dict | None
     selected_sources: list[str]
+    jurisdictions: list[str]
     status: RunStatus
     cache_key: str | None
     report_version: int
@@ -84,6 +89,7 @@ class ResearchRunSummary(BaseModel):
 
     id: uuid.UUID
     compound_name: str
+    jurisdictions: list[str]
     status: RunStatus
     cache_key: str | None
     report_version: int

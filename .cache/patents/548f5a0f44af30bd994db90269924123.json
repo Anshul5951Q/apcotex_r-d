@@ -1,0 +1,21 @@
+{
+  "url": "https://patents.google.com/patent/CN1468872A/en",
+  "patent_number": "CN1468872A",
+  "patent_title": "Production process of high-Mooney point crosslinked butadiene-acrylonitrile rubber powder for modifying plastics",
+  "assignee": "China National Petroleum Corp",
+  "publication_year": "2004",
+  "jurisdiction": "China",
+  "polymerization_process": "emulsion",
+  "acrylonitrile_content": "37-41%",
+  "monomer_ratio": "Butadiene to Acrylonitrile: 58:42 to 61:39",
+  "water_amount": "180 parts of soft water",
+  "emulsifier": "potassium fatty acid-potassium oleate composite emulsifier, 6 parts",
+  "initiator": "0.3-0.5 part",
+  "chain_transfer_agent": "tert-dodecyl mercaptan, 0.5-1.0 part",
+  "temperature": "27 +/-1 \u2103 to 47 +/-1 \u2103",
+  "reaction_time": "10 minutes, 30 minutes, 50 minutes, 90 minutes",
+  "conversion": "more than 95%",
+  "coagulation": "coagulant (NaCl saturated solution with 1.0-2.0g of NaOH per liter), 105-120 parts",
+  "polymer_properties": "Mooney viscosity (ML)1+4 100\u2103: 95-135, bound acrylonitrile: 37-41%, pH: 9.8-10.7",
+  "experimental_notes": "degassing time: 2-3 hr, degassing temperature: 60-70 \u2103, vacuum: -0.04-0.06 Mpa"
+}

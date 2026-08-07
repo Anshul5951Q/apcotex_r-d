@@ -1,0 +1,65 @@
+{
+  "compound": "SBR",
+  "compound_name": "Styrene Butadiene Rubber",
+  "synonyms": [
+    "SBR",
+    "Styrene-Butadiene Rubber",
+    "Buna S",
+    "GR-S"
+  ],
+  "abbreviations": [
+    "SBR"
+  ],
+  "chemical_family": "Synthetic Rubber",
+  "major_monomers": [
+    "Styrene",
+    "Butadiene"
+  ],
+  "alternative_industry_names": [
+    "Buna S",
+    "GR-S"
+  ],
+  "typical_polymerization_routes": [
+    "Emulsion Polymerization",
+    "Solution Polymerization"
+  ],
+  "typical_manufacturing_keywords": [
+    "method for manufacturing",
+    "process for producing",
+    "preparation method",
+    "polymerization process"
+  ],
+  "typical_cpc": [
+    "C08F",
+    "C08L"
+  ],
+  "typical_ipc": [
+    "C08C",
+    "C08F"
+  ],
+  "related_chemistry": [
+    "Natural Rubber",
+    "Polybutadiene",
+    "Polystyrene"
+  ],
+  "competing_chemistry": [
+    "NBR",
+    "CR",
+    "EPDM"
+  ],
+  "application_keywords": [
+    "tire",
+    "glove",
+    "belt",
+    "hose",
+    "adhesive"
+  ],
+  "manufacturing_keywords": [
+    "polymerization",
+    "initiator",
+    "emulsifier",
+    "reactor",
+    "conversion",
+    "catalyst"
+  ]
+}

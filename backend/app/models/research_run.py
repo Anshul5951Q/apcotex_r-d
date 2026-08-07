@@ -34,6 +34,7 @@ class RunStatus(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    PAUSED = "PAUSED"
 
     # Convenience helpers
     @classmethod
@@ -42,7 +43,7 @@ class RunStatus(str, Enum):
 
     @classmethod
     def active_states(cls) -> set["RunStatus"]:
-        return {cls.QUEUED, cls.SEARCHING, cls.FILTERING, cls.EXTRACTING, cls.GENERATING}
+        return {cls.QUEUED, cls.SEARCHING, cls.FILTERING, cls.EXTRACTING, cls.GENERATING, cls.PAUSED}
 
 
 class ResearchRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -71,6 +72,9 @@ class ResearchRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         JSON, nullable=True, default=None
     )
     selected_sources: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    jurisdictions: Mapped[list] = mapped_column(
         JSON, nullable=False, default=list, server_default="[]"
     )
 

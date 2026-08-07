@@ -39,9 +39,9 @@ class GeminiProvider(BaseLLMProvider):
         raise e
 
     async def generate_text(self, prompt: str, system_prompt: str, temperature: float = 0.2) -> str:
-        retries = 5
-        delay = 10
-        for attempt in range(retries):
+        retries = 2
+        delay = 2
+        for attempt in range(retries + 1):
             try:
                 response = self.client.models.generate_content(
                     model=self.model_name,
@@ -56,44 +56,69 @@ class GeminiProvider(BaseLLMProvider):
                 try:
                     self._handle_error(e)
                 except RateLimitException as rle:
-                    logger.warning("[LLM] Gemini rate limit detected (Attempt %d): %s", attempt+1, rle)
-                    if attempt < retries - 1:
-                        wait_time = rle.retry_after + 1.0 if rle.retry_after is not None else delay
-                        logger.info("[LLM] Retrying Gemini in %.1f seconds...", wait_time)
-                        await asyncio.sleep(wait_time)
+                    logger.warning("[LLM] Gemini rate limit/quota detected: %s", rle)
+                    raise rle
+                except Exception as ex:
+                    # Retry on standard network/API errors
+                    if attempt < retries:
+                        logger.warning("[LLM] Gemini API error (Attempt %d): %s. Retrying in %.1f sec...", attempt+1, ex, delay)
+                        await asyncio.sleep(delay)
                         delay *= 2
                     else:
-                        raise rle
+                        raise ex
 
     async def generate_structured(self, prompt: str, system_prompt: str, schema: Type[T], temperature: float = 0.1) -> T | None:
-        retries = 5
-        delay = 10
-        for attempt in range(retries):
+        retries = 2
+        delay = 2
+        use_response_schema = True
+        
+        for attempt in range(retries + 1):
             try:
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config=genai.types.GenerateContentConfig(
+                # If SDK validation failed previously, don't use response_schema
+                if use_response_schema:
+                    config = genai.types.GenerateContentConfig(
                         system_instruction=system_prompt,
                         response_mime_type="application/json",
                         response_schema=schema,
                         temperature=temperature,
-                    ),
+                    )
+                    current_prompt = prompt
+                else:
+                    config = genai.types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        response_mime_type="application/json",
+                        temperature=temperature,
+                    )
+                    schema_json = schema.model_json_schema()
+                    current_prompt = prompt + f"\n\nReturn ONLY a JSON object that strictly matches this schema:\n{schema_json}"
+
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=current_prompt,
+                    config=config,
                 )
                 return schema.model_validate_json(response.text)
+                
             except ValidationError as ve:
-                logger.error("Validation error extracting structured data via Gemini: %s", ve)
-                return None
+                if use_response_schema:
+                    logger.warning("Gemini SDK schema validation error (likely $defs). Disabling response_schema and retrying...: %s", ve)
+                    use_response_schema = False
+                    continue # Try again immediately in the next loop iteration without sleeping
+                else:
+                    logger.error("Validation error extracting structured data via Gemini even with manual schema: %s", ve)
+                    return None
+                    
             except Exception as e:
                 try:
                     self._handle_error(e)
                 except RateLimitException as rle:
-                    logger.warning("[LLM] Gemini rate limit detected (Attempt %d): %s", attempt+1, rle)
-                    if attempt < retries - 1:
-                        wait_time = rle.retry_after + 1.0 if rle.retry_after is not None else delay
-                        logger.info("[LLM] Retrying Gemini in %.1f seconds...", wait_time)
-                        await asyncio.sleep(wait_time)
+                    logger.warning("[LLM] Gemini rate limit/quota detected: %s", rle)
+                    raise rle
+                except Exception as ex:
+                    if attempt < retries:
+                        logger.warning("[LLM] Gemini API error (Attempt %d): %s. Retrying in %.1f sec...", attempt+1, ex, delay)
+                        await asyncio.sleep(delay)
                         delay *= 2
                     else:
-                        logger.error("LLM Structured Extraction failed via Gemini due to rate limit exhaustion.")
+                        logger.error("LLM Structured Extraction failed via Gemini due to persistent errors.")
                         return None

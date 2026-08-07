@@ -1,0 +1,22 @@
+{
+  "url": "https://patents.google.com/patent/US10954419B2/en",
+  "patent_number": "US:10954419",
+  "patent_title": "Curable composition",
+  "assignee": "Kaneka Corp",
+  "publication_year": "2021",
+  "jurisdiction": "US",
+  "quality": "Medium",
+  "polymerization_process": "solution polymerization",
+  "acrylonitrile_content": "Not disclosed",
+  "monomer_ratio": "Not disclosed",
+  "water_amount": "Not disclosed",
+  "emulsifier": "Not disclosed",
+  "initiator": "ethyl 2-bromoadipate, 2,2\u2032-azobis(2-methylbutyronitrile)",
+  "chain_transfer_agent": "Not disclosed",
+  "temperature": "80\u00b0 C., 105\u00b0 C., 130\u00b0 C.",
+  "reaction_time": "5 hours, 2 hours, 3 hours",
+  "conversion": "95%",
+  "coagulation": "Not disclosed",
+  "polymer_properties": "number average molecular weight of 10,500, molecular weight distribution (Mw/Mn) of 1.18, number average molecular weight of 3,800, weight average molecular weight of 9,000",
+  "experimental_notes": "polymerization was carried out under nitrogen atmosphere, volatiles were removed by volatilization under reduced pressure"
+}

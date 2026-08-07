@@ -1,0 +1,22 @@
+{
+  "url": "https://patents.google.com/patent/EP4050046B1/en",
+  "patent_number": "EP4050046B1",
+  "patent_title": "Chloroprene copolymer latex and production method therefor",
+  "assignee": "Resonac Corp",
+  "publication_year": "2026",
+  "jurisdiction": "EP",
+  "quality": "High",
+  "polymerization_process": "emulsion polymerization",
+  "acrylonitrile_content": "Not disclosed",
+  "monomer_ratio": "2-chloro-1,3-butadiene (A-1): 1200 g, 2-methyl-1,3-butadiene (A-2): 300 g",
+  "water_amount": "1290 g of pure water",
+  "emulsifier": "disproportionated rosin acid (65 g), sodium salt of a \u03b2-naphthalenesulfonic acid-formalin condensate (3.3 g), potassium hydroxide (17.1 g), sodium hydroxide (3.9 g)",
+  "initiator": "potassium persulfate (4 g)",
+  "chain_transfer_agent": "n-dodecylmercaptan (1.65 g)",
+  "temperature": "30\u00b0C",
+  "reaction_time": "until polymerization conversion of all the monomers reached 84% by mass",
+  "conversion": "84% by mass",
+  "coagulation": "steam distillation to remove unreacted monomers",
+  "polymer_properties": "tetrahydrofuran insoluble content, weight average molecular weight (Mw), monomer unit content in chloroprene copolymer",
+  "experimental_notes": "polymerization conducted under a nitrogen gas atmosphere, emulsion polymerization"
+}

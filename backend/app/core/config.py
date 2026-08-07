@@ -17,14 +17,32 @@ class Settings(BaseSettings):
         case_sensitive=True,
     )
 
-    # ── Database ────────────────────────────────────────────────────────────
-    DATABASE_URL: str
+    # ── App ──────────────────────────────────────────────────────────────────
+    DEBUG: bool = False
+    
+    # ── Patent Pipeline ──────────────────────────────────────────────────────
+    TARGET_PATENTS: int = 5
+    MIN_REQUIRED_PATENTS: int = 5
+    MAX_SEARCH_RESULTS: int = 100
+    MAX_PATENT_DOWNLOADS: int = 15
+    SEARCH_CACHE_TTL_DAYS: int = 30
+    SEARCH_CACHE_VERSION: int = 1
+    BYPASS_SEARCH_CACHE: bool = False
+    
+    # ── Budgets & Circuit Breakers ──
+    MAX_EXTRACTION_INPUT_TOKENS: int = 5000
+    GLOBAL_TOKEN_BUDGET: int = 30000
+    MAX_EXTRACTION_CALLS: int = 15
+    MAX_TOTAL_LLM_CALLS: int = 20
 
-    # ── JWT ─────────────────────────────────────────────────────────────────
+    # ── LLM Settings ─────────────────────────────────────────────────────────────────
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # ── Database ────────────────────────────────────────────────────────────
+    DATABASE_URL: str
 
     # ── AI API Keys (placeholders for Phase 2) ───────────────────────────────
     GEMINI_API_KEY: str = ""

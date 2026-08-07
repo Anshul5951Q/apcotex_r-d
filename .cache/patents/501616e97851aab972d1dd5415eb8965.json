@@ -1,0 +1,21 @@
+{
+  "url": "https://patents.google.com/patent/US6753382B2/en",
+  "patent_number": "US6753382",
+  "patent_title": "Method for preparing acrylonitrile-butadiene-styrene latex having high total solid content",
+  "assignee": "LG Chemical Co Ltd",
+  "publication_year": "2004",
+  "jurisdiction": "US",
+  "polymerization_process": "emulsion-polymerization",
+  "acrylonitrile_content": "6.7 parts by weight",
+  "monomer_ratio": "butadiene: 100 parts by weight, styrene: 15.8 parts by weight, acrylonitrile: 6.7 parts by weight",
+  "water_amount": "90-110 parts by weight of ion-exchange water",
+  "emulsifier": "potassium rosinate, AQUARON HS-10 as a reactive emulsifier",
+  "initiator": "potassium persulfate, tertiary butylhydro peroxide, cumenehydro peroxide",
+  "chain_transfer_agent": "tertiary dodecyl mercaptane (TDDM)",
+  "temperature": "45-80\u00b0C",
+  "reaction_time": "10-60 hours",
+  "conversion": "98.6-99.1%",
+  "coagulation": "2 parts by weight of aqueous sulfuric acid",
+  "polymer_properties": "high total solid content, low coagulated material content",
+  "experimental_notes": "graft-polymerizing butadiene rubber with the monomers of acrylonitrile and styrene through emulsion-polymerization"
+}

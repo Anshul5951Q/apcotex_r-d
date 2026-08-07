@@ -1,0 +1,87 @@
+# Configuration for Deterministic Ranking Pipeline
+
+# Immediate Hard Rejects
+obvious_false_positives:
+  - "battery"
+  - "electrode"
+  - "tire"
+  - "adhesive"
+  - "polyethylene"
+  - "olefin catalyst"
+
+# Stage 1: Metadata Scoring
+metadata_scoring:
+  positive:
+    "nitrile rubber": 10
+    "nitrile butadiene rubber": 10
+    "nbr": 10
+    "acrylonitrile": 8
+    "butadiene": 8
+    "nitrile latex": 10
+    "polymerization": 6
+    "emulsion polymerization": 12
+    "preparation": 5
+    "manufacturing": 5
+    "synthesis": 6
+    "copolymerization": 8
+    "latex process": 10
+    "production process": 5
+    "initiator": 4
+    "emulsifier": 4
+    "method": 3
+    "process": 3
+  negative:
+    "hose": -5
+    "belt": -5
+    "resin composition": -10
+    "coating": -8
+    "sealant": -8
+    "polypropylene": -10
+    "olefin": -8
+    "film": -6
+    "display": -10
+    "electronic": -10
+    "electrolyte": -10
+    "paint": -8
+  cpc_positive:
+    "C08F": 10
+    "C08C": 8
+    "C08L": 5
+  cpc_negative:
+    "H01M": -15
+    "B60": -10
+    "A61": -10
+    "G02": -10
+    "H05": -10
+
+# Stage 2: Content Scoring
+content_scoring:
+  positive:
+    "experimental example": 15
+    "example 1": 15
+    "example 2": 10
+    "polymerization example": 20
+    "preparation example": 20
+    "emulsion polymerization": 15
+    "recipe": 10
+    "monomer feed": 15
+    "chain transfer agent": 15
+    "initiator": 10
+    "temperature": 5
+    "conversion": 10
+    "coagulation": 15
+    "latex": 10
+    "emulsifier": 10
+    "reactor": 10
+  negative:
+    "rubber article": -15
+    "battery": -20
+    "adhesive": -15
+    "tire": -20
+    "sealant": -15
+    "film": -10
+    "coating": -10
+    "composition only": -15
+    "application example": -10
+    "medical device": -20
+    "electronics": -20

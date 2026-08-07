@@ -58,6 +58,7 @@ export interface ResearchRunPayload {
   patent_sources?: string[];
   mentioned_websites?: string[];
   publication_filter?: any;
+  jurisdictions?: string[];
 }
 
 export async function createResearchRun(payload: ResearchRunPayload) {
@@ -66,7 +67,8 @@ export async function createResearchRun(payload: ResearchRunPayload) {
     competitors: payload.competitors,
     selected_sources: payload.patent_sources || ["google_patents"],
     mentioned_websites: payload.mentioned_websites || [],
-    publication_filter: payload.publication_filter || undefined
+    publication_filter: payload.publication_filter || undefined,
+    jurisdictions: payload.jurisdictions || ["US", "EP", "IN"]
   };
   
   const res = await authFetch('/research-runs', {
@@ -82,6 +84,17 @@ export async function createResearchRun(payload: ResearchRunPayload) {
   
   const data = await res.json();
   return data.data; // Returns ResearchRunResponse
+}
+
+export async function getResearchRuns() {
+  const res = await authFetch('/research-runs?page_size=100');
+  
+  if (!res.ok) {
+    throw new Error('Failed to fetch research runs');
+  }
+  
+  const data = await res.json();
+  return data.data; // Returns ResearchRunList
 }
 
 export async function pollResearchStatus(id: string) {

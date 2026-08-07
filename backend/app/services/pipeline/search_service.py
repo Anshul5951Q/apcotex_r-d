@@ -5,87 +5,78 @@ Uses Gemini to generate a search strategy, then uses Serper API to find patent l
 """
 import json
 import logging
-from typing import List
+from typing import List, Dict, Any
 
-import httpx
 import httpx
 
 from app.core.config import settings
-from app.services.pipeline.schemas import AIStrategyResult
-from app.services.llm import llm_client
+from app.services.pipeline.schemas import CompoundSearchProfile
 
 logger = logging.getLogger(__name__)
-
-SEARCH_STRATEGY_PROMPT = """
-You are an expert patent researcher.
-The user wants to research patents for the following compound: {compound_name}
-Competitors to keep an eye on (if any): {competitors}
-
-Your goal is to generate 5 highly optimized boolean search queries to find patents 
-that describe the RAW SYNTHESIS and POLYMERIZATION PROCESS of this compound.
-DO NOT create queries that target gloves, hoses, rubber products, or compounding recipes.
-
-You MUST include the following combinations (incorporating competitor names if provided):
-1. "<compound> polymerization"
-2. "<compound> manufacturing method"
-3. "<compound> emulsion polymerization"
-4. "<compound> preparation method"
-5. "<compound> synthesis"
-
-Generate the queries in the requested JSON format.
-"""
 
 class SearchService:
     def __init__(self):
         self.serper_api_key = settings.SERPER_API_KEY
 
-    async def generate_strategy(self, compound_name: str, competitors: List[str]) -> AIStrategyResult:
-        """Use Gemini to create the search strategy."""
-        logger.info("Generating search strategy for %s...", compound_name)
-        comp_str = ", ".join(competitors) if competitors else "None"
-        prompt = SEARCH_STRATEGY_PROMPT.format(compound_name=compound_name, competitors=comp_str)
+    def build_queries(self, profile: CompoundSearchProfile, jurisdiction: str) -> List[Dict[str, str]]:
+        """Deterministically generate jurisdiction-specific queries categorized by intent."""
+        queries = []
+        
+        # Compound
+        queries.append({"query": f"{jurisdiction} {profile.compound_name} patent", "tier": "Tier 1"})
+        
+        # Synonyms
+        for syn in profile.synonyms[:2]:
+            queries.append({"query": f"{jurisdiction} {syn} patent", "tier": "Tier 2"})
+            
+        # Monomers
+        if profile.major_monomers:
+            monomers_str = " ".join(profile.major_monomers)
+            queries.append({"query": f"{jurisdiction} {monomers_str} copolymer patent", "tier": "Tier 2"})
+            
+        # Polymerization route
+        for route in profile.typical_polymerization_routes[:2]:
+            queries.append({"query": f"{jurisdiction} {route} {profile.compound_name} patent", "tier": "Tier 2"})
+            
+        # Manufacturing
+        for phrase in profile.typical_manufacturing_keywords[:2]:
+            queries.append({"query": f"{jurisdiction} {phrase} {profile.compound_name} patent", "tier": "Tier 1"})
+            
+        # Recipe
+        queries.append({"query": f"{jurisdiction} recipe {profile.compound_name} patent", "tier": "Tier 3"})
+        
+        # Experimental examples
+        queries.append({"query": f"{jurisdiction} experimental examples {profile.compound_name} patent", "tier": "Tier 3"})
+        
+        # CPC
+        for cpc in profile.typical_cpc[:2]:
+            queries.append({"query": f"{jurisdiction} {cpc} {profile.compound_name} patent", "tier": "Tier 3"})
+            
+        # IPC
+        for ipc in profile.typical_ipc[:2]:
+            queries.append({"query": f"{jurisdiction} {ipc} {profile.compound_name} patent", "tier": "Tier 3"})
+                
+        logger.info("Backend generated %d dynamic search queries for %s (%s).", len(queries), profile.compound, jurisdiction)
+        return queries
 
-        try:
-            result = await llm_client.generate_structured(
-                prompt=prompt,
-                system_prompt="You are a JSON generator. Do not include markdown blocks.",
-                schema=AIStrategyResult,
-                temperature=0.3
-            )
-            if not result:
-                raise Exception("LLM Client returned None for structured extraction.")
-            return result
-        except Exception as e:
-            logger.error("Failed to generate search strategy: %s", e)
-            # Fallback
-            return AIStrategyResult(
-                search_queries=[f'"{compound_name}" (polymerization OR synthesis OR preparation) patent'],
-                rationale="Fallback search strategy due to AI generation error."
-            )
-
-    async def search_patents(self, queries: List[str]) -> List[str]:
-        """Hit the Serper API to get patent links."""
-        logger.info("Executing Serper API search for %d queries...", len(queries))
+    async def search_patents(self, queries: List[Dict[str, str]], allowed_jurisdiction: str) -> List[Dict[str, Any]]:
+        """Hit the Serper API and extract metadata, returning a list of dictionaries."""
+        logger.info("Executing Serper API search for %d queries in jurisdiction %s...", len(queries), allowed_jurisdiction)
         
         import re
-        all_links = []
-        seen_families = set()
+        all_results = []
         
         if not self.serper_api_key:
             logger.warning("SERPER_API_KEY is not set. Returning empty list.")
             return []
 
         async with httpx.AsyncClient() as client:
-            for query in queries:
-                # We specifically want patents, so we might enforce site:patents.google.com
-                # or just use the "patents" search if Serper supports it.
-                # Serper's default search with 'patent' in the query usually works, 
-                # but appending site:patents.google.com is safer.
-                refined_query = f"{query} site:patents.google.com"
-                
+            for q_dict in queries:
+                query_str = q_dict["query"]
+                query_tier = q_dict["tier"]
                 payload = json.dumps({
-                    "q": refined_query,
-                    "num": 10  # Top 10 per query to ensure high coverage
+                    "q": query_str,
+                    "num": 25 # Limit to 25 results per query
                 })
                 headers = {
                     'X-API-KEY': self.serper_api_key,
@@ -94,7 +85,7 @@ class SearchService:
                 
                 try:
                     response = await client.post(
-                        "https://google.serper.dev/search", 
+                        "https://google.serper.dev/patents", 
                         headers=headers, 
                         data=payload,
                         timeout=15.0
@@ -106,14 +97,27 @@ class SearchService:
                     for result in organic_results:
                         link = result.get("link")
                         if link and "patents.google.com" in link:
-                            # Deduplicate patent families by extracting the core patent number (e.g. US123456 from US123456B2)
                             match = re.search(r'patents\.google\.com/patent/([A-Z]{2}\d+)', link)
                             if match:
-                                family_id = match.group(1)
-                                if family_id not in seen_families:
-                                    seen_families.add(family_id)
-                                    all_links.append(link)
+                                patent_number = match.group(1)
+                                authority = patent_number[:2].upper()
+                                
+                                # IMMEDIATE JURISDICTION FILTERING
+                                if authority != allowed_jurisdiction.upper():
+                                    continue
+                                    
+                                meta = {
+                                    "patent_number": patent_number,
+                                    "jurisdiction": authority,
+                                    "title": result.get("title", ""),
+                                    "snippet": result.get("snippet", ""),
+                                    "url": link,
+                                    "publication_date": result.get("publicationDate", ""),
+                                    "query_matched": query_str,
+                                    "tier": query_tier
+                                }
+                                all_results.append(meta)
                 except Exception as e:
-                    logger.error("Serper API request failed for query '%s': %s", query, e)
+                    logger.error("Serper API request failed for query '%s': %s", query_str, e)
                     
-        return all_links
+        return all_results

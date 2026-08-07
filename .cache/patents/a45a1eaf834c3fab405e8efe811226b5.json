@@ -1,0 +1,21 @@
+{
+  "url": "https://patents.google.com/patent/CN1865306A/en",
+  "patent_number": "CN1865306A",
+  "patent_title": "Low content nitrile cross-linked powdery acrylonitrile butadiene preparation method",
+  "assignee": "China National Petroleum Corp",
+  "publication_year": "2006",
+  "jurisdiction": "CN",
+  "polymerization_process": "emulsion polymerization",
+  "acrylonitrile_content": "20-28 percent",
+  "monomer_ratio": "28 parts of acrylonitrile to 72 parts of butadiene",
+  "water_amount": "180 parts of soft water",
+  "emulsifier": "fatty acid potassium-potassium oleate composite emulsifier",
+  "initiator": "potassium persulfate",
+  "chain_transfer_agent": "tert-dodecyl mercaptan",
+  "temperature": "29 +/-1 \u2103 to 47 +/-1 \u2103",
+  "reaction_time": "90 minutes, 80 minutes",
+  "conversion": "more than 95%",
+  "coagulation": "saturated NaCl solution with pH 9 as coagulant",
+  "polymer_properties": "solid content: 35.6 percent; pH value: 10.7; structural gel content: 78 percent; mooney viscosity: 125; bound acrylonitrile: 26.2 percent",
+  "experimental_notes": "vacuumizing a polymerization kettle, sequentially adding ingredients, heating to 29 +/-1 \u2103, then to 47 +/-1 \u2103, adding sodium ferulate to terminate the reaction"
+}

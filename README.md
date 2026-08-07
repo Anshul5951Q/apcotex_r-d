@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 
 # R&D Product Recipe Simulator
 
@@ -37,3 +38,6 @@ python main.py
 
 The original frontend design is available at:
 https://www.figma.com/design/26xhQpBFcpPsjFAyhpeJVx/R-D-Product-Recipe-Simulator
+=======
+# apcotex_r-d
+>>>>>>> b9f714dfadfdeceafa1b2f094835381f7a034014

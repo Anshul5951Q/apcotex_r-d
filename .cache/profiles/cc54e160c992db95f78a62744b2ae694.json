@@ -1,0 +1,61 @@
+{
+  "compound": "EPDM",
+  "primary_name": "Ethylene Propylene Diene Monomer",
+  "chemical_family": "EPDM",
+  "synonyms": [
+    "EPDM",
+    "Ethylene-Propylene-Diene",
+    "Ethylene Propylene Rubber",
+    "EPR"
+  ],
+  "major_monomers": [
+    "ethylene",
+    "propylene",
+    "diene"
+  ],
+  "typical_processes": [
+    "solution polymerization",
+    "Ziegler-Natta",
+    "emulsion polymerization"
+  ],
+  "manufacturing_terms": [
+    "method for manufacturing",
+    "process for producing",
+    "preparation method",
+    "synthesis of EPDM",
+    "production of ethylene propylene diene monomer"
+  ],
+  "manufacturing_intents": [
+    "polymerization",
+    "synthesis",
+    "preparation",
+    "production process",
+    "catalyst",
+    "reactor"
+  ],
+  "polymerization_vocabulary": [
+    "initiator",
+    "emulsifier",
+    "catalyst",
+    "chain transfer agent",
+    "conversion",
+    "co-polymerization"
+  ],
+  "preferred_cpc": [
+    "C08F",
+    "C08L"
+  ],
+  "obvious_false_positives": [
+    "chloroprene",
+    "polyethylene",
+    "battery",
+    "adhesive",
+    "glove",
+    "tire",
+    "film",
+    "medical device",
+    "article",
+    "nitrile rubber",
+    "neoprene"
+  ]
+}

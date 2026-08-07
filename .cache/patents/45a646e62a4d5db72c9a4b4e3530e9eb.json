@@ -1,0 +1,22 @@
+{
+  "url": "https://patents.google.com/patent/US10167348B2/en",
+  "patent_number": "US10167348",
+  "patent_title": "Solution polymers formed from methylene malonate monomers, polymerization, and solution polymer products",
+  "assignee": "Sirrus Inc",
+  "publication_year": "2019",
+  "jurisdiction": "US",
+  "quality": "Medium",
+  "polymerization_process": "Solution polymerization",
+  "acrylonitrile_content": "Not disclosed",
+  "monomer_ratio": "Not disclosed",
+  "water_amount": "Not disclosed",
+  "emulsifier": "Not disclosed",
+  "initiator": "Tetramethyl guanidine (TMG), secondary butyl lithium",
+  "chain_transfer_agent": "Not disclosed",
+  "temperature": "About 23\u00b0 C., about \u221278\u00b0 C.",
+  "reaction_time": "About 1 hour, 20 minutes, 5 minutes",
+  "conversion": "\u2248100%",
+  "coagulation": "Not disclosed",
+  "polymer_properties": "Number average molecular weight, weight average molecular weight, polydispersity index, glass transition temperature",
+  "experimental_notes": "Solution polymerization, anionic polymerization, living polymerization, various solvents and monomers used"
+}

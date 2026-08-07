@@ -7,10 +7,12 @@ import {
   Loader,
   Download,
   FlaskConical,
-  AlertTriangle
+  AlertTriangle,
+  FileText
 } from "lucide-react";
 import { usePatentResearch } from "../../contexts/PatentResearchContext";
 import { LowAcnPatentReportViewer } from "./LowAcnPatentReportViewer";
+import { PreviousReports } from "./PreviousReports";
 import { 
   createResearchRun, 
   pollResearchStatus, 
@@ -46,6 +48,7 @@ const PUBLICATION_DATE_OPTIONS: {
 ];
 
 const PATENT_SOURCES = ["Google Patents", "Espacenet", "USPTO"];
+const JURISDICTIONS = ["US", "EU", "IN", "CN", "JP", "KR", "WO", "Other"];
 const STATUS_ORDER = ["PENDING", "SEARCHING", "FILTERING", "EXTRACTING", "GENERATING", "COMPLETED"];
 
 export function LiteratureReview() {
@@ -60,7 +63,10 @@ export function LiteratureReview() {
   const [customDateTo, setCustomDateTo] = useState("");
   const [publicationDateError, setPublicationDateError] = useState("");
   const [selectedSources, setSelectedSources] = useState<string[]>([...PATENT_SOURCES]);
+  const [selectedJurisdictions, setSelectedJurisdictions] = useState<string[]>(["US", "EU", "IN"]);
+  const [jurisdictionsError, setJurisdictionsError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showPreviousReports, setShowPreviousReports] = useState(false);
   
   // Polling ref
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
@@ -114,6 +120,14 @@ export function LiteratureReview() {
     );
   };
 
+  const toggleJurisdiction = (jur: string) => {
+    setSelectedJurisdictions((prev) => {
+      const newSelections = prev.includes(jur) ? prev.filter((j) => j !== jur) : [...prev, jur];
+      if (newSelections.length > 0) setJurisdictionsError("");
+      return newSelections;
+    });
+  };
+
   const validatePublicationDate = () => {
     if (publicationDateMode !== "custom") {
       setPublicationDateError("");
@@ -136,6 +150,10 @@ export function LiteratureReview() {
     (!customDateFrom || !customDateTo || customDateFrom > customDateTo);
 
   const startResearch = async () => {
+    if (selectedJurisdictions.length === 0) {
+      setJurisdictionsError("Please select at least one jurisdiction.");
+      return;
+    }
     if (!validatePublicationDate()) return;
     if (!compound.trim() || selectedSources.length === 0 || isCustomPublicationRangeInvalid) return;
     
@@ -158,13 +176,16 @@ export function LiteratureReview() {
         customFrom: customDateFrom,
         customTo: customDateTo
       };
+      
+      const mappedJurisdictions = selectedJurisdictions.map(j => j === "EU" ? "EP" : j);
         
       const run = await createResearchRun({
         compound_name: compound.trim(),
         competitors,
         patent_sources: selectedSources,
         mentioned_websites: websites,
-        publication_filter: publicationFilter
+        publication_filter: publicationFilter,
+        jurisdictions: mappedJurisdictions
       });
       
       setState({ 
@@ -243,14 +264,30 @@ export function LiteratureReview() {
 
   return (
     <div style={{ padding: "28px 32px 48px", background: BG, minHeight: "100vh" }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ color: BLUE, fontSize: "1.25rem", fontWeight: 700, marginBottom: 4 }}>
-          Patent Research
-        </h1>
-        <p style={{ color: "#6B7280", fontSize: "0.875rem" }}>
-          AI-powered patent research across global patent databases to identify competitor patents, technology trends, and formulation intelligence.
-        </p>
+      <div style={{ marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h1 style={{ color: BLUE, fontSize: "1.25rem", fontWeight: 700, marginBottom: 4 }}>
+            Patent Research
+          </h1>
+          <p style={{ color: "#6B7280", fontSize: "0.875rem" }}>
+            AI-powered patent research across global patent databases to identify competitor patents, technology trends, and formulation intelligence.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowPreviousReports(true)}
+          style={{
+            background: "transparent", color: BLUE, border: `1.5px solid ${BLUE}`,
+            borderRadius: 7, padding: "8px 16px", fontSize: "0.875rem", fontWeight: 600,
+            cursor: "pointer", display: "flex", alignItems: "center", gap: 6
+          }}
+        >
+          <FileText size={16} /> View Previous Reports
+        </button>
       </div>
+
+      {showPreviousReports && (
+        <PreviousReports onClose={() => setShowPreviousReports(false)} />
+      )}
 
       {isForm && (
         <div style={{ maxWidth: 680 }}>
@@ -373,6 +410,35 @@ export function LiteratureReview() {
                 );
               })}
             </div>
+
+            <label style={{ display: "block", fontSize: "0.875rem", fontWeight: 600, color: TEXT, marginBottom: 10 }}>
+              Jurisdictions
+            </label>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: jurisdictionsError ? 8 : 24 }}>
+              {JURISDICTIONS.map((jur) => {
+                const active = selectedJurisdictions.includes(jur);
+                return (
+                  <button
+                    key={jur}
+                    onClick={() => toggleJurisdiction(jur)}
+                    style={{
+                      padding: "5px 13px", borderRadius: 20, fontSize: "0.8125rem", fontWeight: 500, cursor: "pointer",
+                      border: `1.5px solid ${active ? BLUE : BORDER}`, background: active ? "rgba(31,95,168,0.07)" : "white",
+                      color: active ? BLUE : "#6B7280", transition: "all 0.12s", display: "flex", alignItems: "center", gap: 5,
+                    }}
+                  >
+                    {active && <CheckCircle2 size={13} color={BLUE} />}
+                    {jur}
+                  </button>
+                );
+              })}
+            </div>
+            
+            {jurisdictionsError && (
+              <p style={{ margin: "0 0 24px", color: RED, fontSize: "0.8125rem" }}>
+                {jurisdictionsError}
+              </p>
+            )}
 
             <button
               onClick={startResearch}

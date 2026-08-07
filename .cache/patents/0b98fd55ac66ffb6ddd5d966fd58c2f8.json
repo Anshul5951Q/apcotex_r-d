@@ -1,0 +1,21 @@
+{
+  "url": "https://patents.google.com/patent/EP0071240A1/en",
+  "patent_number": "EP0071240A1",
+  "patent_title": "Production of emulsion-polymerized butadiene rubber in powder form",
+  "assignee": "BF Goodrich Corp",
+  "publication_year": "1983",
+  "jurisdiction": "EP",
+  "polymerization_process": "emulsion polymerization",
+  "acrylonitrile_content": "31%, 34.6%",
+  "monomer_ratio": "butadiene and acrylonitrile",
+  "water_amount": "7500 parts of water",
+  "emulsifier": "sodium lauryl sulfate",
+  "initiator": "Not disclosed",
+  "chain_transfer_agent": "Not disclosed",
+  "temperature": "60-80\u00b0C, 80\u00b0C",
+  "reaction_time": "5 minutes, 10 minutes",
+  "conversion": "Not disclosed",
+  "coagulation": "coagulation with magnesium sulfate and aluminum sulfate",
+  "polymer_properties": "Mooney viscosity (ML-4-212) of 55, 61",
+  "experimental_notes": "coagulum wet cake obtained contains powder size particles of the rubber, dried to give a dry free-flowing rubber powder"
+}

@@ -95,6 +95,8 @@ class ResearchService:
             created_by=current_user.id,
         )
         run = await self._repo.create(run)
+        # Commit the transaction so the background task can see the run in its own session
+        await self._repo._session.commit()
         logger.info("Created ResearchRun %s for user %s", run.id, current_user.id)
 
         # Spawn background pipeline

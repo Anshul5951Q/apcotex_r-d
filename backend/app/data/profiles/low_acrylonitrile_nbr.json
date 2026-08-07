@@ -1,0 +1,43 @@
+{
+    "compound": "Low Acrylonitrile NBR",
+    "polymer_family": "NBR",
+    "primary_compounds": [
+        "NBR",
+        "nitrile rubber"
+    ],
+    "secondary_terms": [
+        "Low ACN",
+        "Bound Acrylonitrile",
+        "Low Acrylonitrile"
+    ],
+    "required_chemistry": [
+        "acrylonitrile",
+        "butadiene"
+    ],
+    "polymerization_keywords": [
+        "emulsion polymerization",
+        "initiator",
+        "coagulation",
+        "polymerization process",
+        "copolymerization"
+    ],
+    "negative_compounds": [
+        "chloroprene",
+        "polyethylene",
+        "battery",
+        "adhesive",
+        "olefin",
+        "polyurethane"
+    ],
+    "preferred_cpc": [
+        "C08F",
+        "C08L"
+    ],
+    "target_authorities": [
+        "US",
+        "EP",
+        "WO",
+        "CN"
+    ],
+    "minimum_examples": "Experimental Example"
+}

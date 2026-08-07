@@ -12,13 +12,15 @@ import httpx
 from bs4 import BeautifulSoup
 import pdfplumber
 
+from app.services.pipeline.schemas import ParsedPatent
+
 logger = logging.getLogger(__name__)
 
 
 class FetcherService:
-    async def fetch_patent_text(self, url: str) -> Optional[str]:
+    async def fetch_patent(self, url: str) -> Optional[ParsedPatent]:
         """
-        Download the patent and extract raw text.
+        Download the patent and extract sections into a ParsedPatent.
         Supports HTML (Google Patents) and PDF.
         """
         logger.info("Fetching patent from %s...", url)
@@ -30,14 +32,17 @@ class FetcherService:
                 content_type = response.headers.get("Content-Type", "")
                 
                 if "application/pdf" in content_type.lower() or url.lower().endswith(".pdf"):
-                    return self._parse_pdf(response.content)
+                    parsed = self._parse_pdf(response.content)
                 else:
-                    return self._parse_google_patents_html(response.text)
+                    parsed = self._parse_google_patents_html(response.text)
+                
+                parsed.url = url
+                return parsed
         except Exception as e:
             logger.error("Failed to fetch patent from %s: %s", url, e)
             return None
 
-    def _parse_pdf(self, pdf_bytes: bytes) -> str:
+    def _parse_pdf(self, pdf_bytes: bytes) -> ParsedPatent:
         """Extract text from a PDF file using pdfplumber."""
         logger.info("Parsing PDF content...")
         text_pages = []
@@ -47,19 +52,31 @@ class FetcherService:
                     text = page.extract_text()
                     if text:
                         text_pages.append(text)
-            return "\n".join(text_pages)
+            
+            # For PDF, we just dump everything into detailed_description since we lack HTML tags
+            # Rule-based extraction will still run on it, but it's less structured.
+            return ParsedPatent(detailed_description="\n".join(text_pages))
         except Exception as e:
             logger.error("PDF parsing failed: %s", e)
             return ""
 
-    def _parse_google_patents_html(self, html: str) -> str:
+    def _parse_google_patents_html(self, html: str) -> ParsedPatent:
         """
-        Extract meaningful text from Google Patents HTML.
-        Removes legal boilerplate, scripts, styles, and priority history.
+        Extract meaningful sections from Google Patents HTML.
         """
         logger.info("Parsing Google Patents HTML...")
         soup = BeautifulSoup(html, "html.parser")
         
+        parsed = ParsedPatent()
+        
+        # 1. Extract metadata from meta tags
+        meta_tags = soup.find_all("meta")
+        for meta in meta_tags:
+            name = meta.get("name") or meta.get("property")
+            content = meta.get("content")
+            if name and content and (name.startswith("DC.") or name.startswith("citation_")):
+                parsed.metadata[name] = content
+
         # Remove noisy elements
         for tag in soup(["script", "style", "nav", "footer", "meta", "link", "noscript"]):
             tag.decompose()
@@ -68,27 +85,52 @@ class FetcherService:
         for tag in soup.find_all(class_=re.compile("classification|citation|legal|history", re.IGNORECASE)):
             tag.decompose()
 
-        # Extract abstract, description, and claims
-        sections = []
+        # Extract abstract
+        abstract_node = soup.find("section", {"itemprop": "abstract"})
+        if abstract_node:
+            parsed.abstract = abstract_node.get_text(separator="\n", strip=True)
+            
+        # Extract claims
+        claims_node = soup.find("section", {"itemprop": "claims"})
+        if claims_node:
+            parsed.claims = claims_node.get_text(separator="\n", strip=True)
+            
+        # Extract tables from description BEFORE pulling text
+        description_node = soup.find("section", {"itemprop": "description"})
         
-        abstract = soup.find("section", {"itemprop": "abstract"})
-        if abstract:
-            sections.append("ABSTRACT:\n" + abstract.get_text(separator="\n", strip=True))
+        if description_node:
+            # We want to segment description into Summary, Examples, Detailed Desc.
+            # Google Patents doesn't strictly tag these, but often uses headers or bold text.
+            # We'll just grab the full description and let the ParserService split it if needed,
+            # or we can do a naive split here.
+            # A common approach is to look for "Example", "Summary", etc in headings.
             
-        description = soup.find("section", {"itemprop": "description"})
-        if description:
-            sections.append("DESCRIPTION:\n" + description.get_text(separator="\n", strip=True))
+            # Pull tables first so they don't just become garbled text
+            tables = description_node.find_all("table")
+            for t in tables:
+                # We'll pass the raw HTML of the table to the rule-based extractor
+                parsed.tables.append({"html": str(t)})
+                # We optionally remove them from text to reduce token count, but sometimes text refers to them.
+                # Let's keep them in the text as plain text just in case, but they will be processed natively.
+                
+            desc_text = description_node.get_text(separator="\n", strip=True)
             
-        claims = soup.find("section", {"itemprop": "claims"})
-        if claims:
-            sections.append("CLAIMS:\n" + claims.get_text(separator="\n", strip=True))
-            
-        # If we didn't find specific tags, just dump the body text
-        if not sections:
-            logger.warning("Could not find specific patent sections. Dumping entire body text.")
+            # Naive splitting based on common headers
+            # Find the index of "EXAMPLES" or "Example 1"
+            ex_match = re.search(r'\n(EXAMPLES?|Examples?|EXAMPLE 1)\n', desc_text, re.IGNORECASE)
+            if ex_match:
+                idx = ex_match.start()
+                parsed.detailed_description = desc_text[:idx].strip()
+                parsed.examples = desc_text[idx:].strip()
+            else:
+                parsed.detailed_description = desc_text
+                
+        else:
+            # Fallback
             body = soup.find("body")
             if body:
-                return body.get_text(separator="\n", strip=True)
-            return soup.get_text(separator="\n", strip=True)
-            
-        return "\n\n".join(sections)
+                parsed.detailed_description = body.get_text(separator="\n", strip=True)
+            else:
+                parsed.detailed_description = soup.get_text(separator="\n", strip=True)
+                
+        return parsed

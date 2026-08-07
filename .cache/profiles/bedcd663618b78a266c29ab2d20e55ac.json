@@ -1,0 +1,65 @@
+{
+  "compound": "Low Acrylonitrile NBR",
+  "compound_name": "Low Acrylonitrile Butadiene Rubber",
+  "synonyms": [
+    "Low ACN NBR",
+    "Low Nitrile Rubber",
+    "NBR"
+  ],
+  "abbreviations": [
+    "NBR",
+    "LANBR"
+  ],
+  "chemical_family": "Nitrile Rubber",
+  "major_monomers": [
+    "Butadiene",
+    "Acrylonitrile"
+  ],
+  "alternative_industry_names": [
+    "Perbunan",
+    "Nipol"
+  ],
+  "typical_polymerization_routes": [
+    "Emulsion Polymerization",
+    "Solution Polymerization"
+  ],
+  "typical_manufacturing_keywords": [
+    "method for manufacturing",
+    "process for producing",
+    "preparation method",
+    "polymerization process"
+  ],
+  "typical_cpc": [
+    "C08F",
+    "C08L"
+  ],
+  "typical_ipc": [
+    "C08C",
+    "C08F"
+  ],
+  "related_chemistry": [
+    "Styrene Butadiene Rubber",
+    "Polybutadiene",
+    "Polyacrylonitrile"
+  ],
+  "competing_chemistry": [
+    "Polychloroprene",
+    "Ethylene Propylene Diene Monomer",
+    "Styrene Isoprene Styrene"
+  ],
+  "application_keywords": [
+    "glove",
+    "hose",
+    "seal",
+    "adhesive",
+    "coating"
+  ],
+  "manufacturing_keywords": [
+    "initiator",
+    "emulsifier",
+    "reactor",
+    "conversion",
+    "catalyst",
+    "polymerization"
+  ]
+}

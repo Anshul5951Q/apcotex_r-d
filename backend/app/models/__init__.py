@@ -9,6 +9,7 @@ from app.models.research_run import ResearchRun, RunStatus
 from app.models.report_metadata import ReportMetadata
 from app.models.report_file import ReportFile, ReportFileType
 from app.models.app_config import AppConfig
+from app.models.patent_document import PatentDocument
 
 __all__ = [
     "User",
@@ -19,4 +20,5 @@ __all__ = [
     "ReportFile",
     "ReportFileType",
     "AppConfig",
+    "PatentDocument",
 ]

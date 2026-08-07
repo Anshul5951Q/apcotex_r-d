@@ -1,0 +1,21 @@
+{
+  "url": "https://patents.google.com/patent/CN102464768A/en",
+  "patent_number": "CN102464768A",
+  "patent_title": "A kind of preparation of high strength nitrile rubber",
+  "assignee": "Petrochina Co Ltd",
+  "publication_year": "2012",
+  "jurisdiction": "CN",
+  "polymerization_process": "emulsion polymerization",
+  "acrylonitrile_content": "Not disclosed",
+  "monomer_ratio": "Not disclosed",
+  "water_amount": "Not disclosed",
+  "emulsifier": "composite system of disproportionated rosin acid potassium soap, oleic acid potassium soap and naphthalene sulfonic acid formaldehyde condensation compound sodium salt",
+  "initiator": "persulfate",
+  "chain_transfer_agent": "D (molecular weight regulator)",
+  "temperature": "10\u00b0C, 30\u00b0C, 100\u00b0C, 25\u00b0C",
+  "reaction_time": "Not disclosed",
+  "conversion": "70-75%",
+  "coagulation": "Not disclosed",
+  "polymer_properties": "Mooney viscosity MS(1+4)100\u2103 40-65, tensile strength \u2265 27MPa, elongation at break \u2265 400%",
+  "experimental_notes": "Adding a terminator and an anti-aging agent when the reaction conversion rate reaches 70-75%, degassing, condensing, washing and drying"
+}

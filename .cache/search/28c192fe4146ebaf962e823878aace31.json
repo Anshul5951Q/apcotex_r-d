@@ -1,0 +1,33 @@
+{
+  "status": "SUCCESS",
+  "created_at": "2026-08-06 13:35",
+  "query_version": 1,
+  "patent_count": 25,
+  "patents": [
+    "https://patents.google.com/patent/US20220061244A1/en",
+    "https://patents.google.com/patent/US11377672B2/en",
+    "https://patents.google.com/patent/US8747840B2/en",
+    "https://patents.google.com/patent/US7812092B2/en",
+    "https://patents.google.com/patent/US9320945B2/en",
+    "https://patents.google.com/patent/US10016015B2/en",
+    "https://patents.google.com/patent/US8758168B2/en",
+    "https://patents.google.com/patent/US11691866B2/en",
+    "https://patents.google.com/patent/US9777132B2/en",
+    "https://patents.google.com/patent/US10328313B2/en",
+    "https://patents.google.com/patent/US9713749B2/en",
+    "https://patents.google.com/patent/US20250103997A1/en",
+    "https://patents.google.com/patent/US8887286B2/en",
+    "https://patents.google.com/patent/US9585946B2/en",
+    "https://patents.google.com/patent/US11866046B2/en",
+    "https://patents.google.com/patent/US10174442B2/en",
+    "https://patents.google.com/patent/US12543004B1/en",
+    "https://patents.google.com/patent/US7041761B2/en",
+    "https://patents.google.com/patent/US8772415B2/en",
+    "https://patents.google.com/patent/US11186731B2/en",
+    "https://patents.google.com/patent/US10624997B2/en",
+    "https://patents.google.com/patent/US10008742B2/en",
+    "https://patents.google.com/patent/US10227421B2/en",
+    "https://patents.google.com/patent/US9598564B2/en",
+    "https://patents.google.com/patent/US10512527B2/en"
+  ]
+}
