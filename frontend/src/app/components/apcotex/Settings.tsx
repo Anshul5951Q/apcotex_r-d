@@ -41,7 +41,9 @@ export const SettingsPage: React.FC = () => {
       setIsSaving(true);
       setError(null);
       setSuccessMsg(null);
-      await settingsApi.updateLLMProvider(selectedProvider);
+      const selectedInfo = settings?.providers.find(p => p.id === selectedProvider);
+      const apiKey = selectedInfo?.apiKeyInput;
+      await settingsApi.updateLLMProvider(selectedProvider, apiKey);
       setSuccessMsg('Provider configuration saved successfully.');
       await fetchSettings(); // Refresh status
     } catch (err: any) {
@@ -159,6 +161,32 @@ export const SettingsPage: React.FC = () => {
                 </div>
 
                 <div className="sm:col-span-2">
+                  <dt className="text-sm font-medium text-gray-500">API Key</dt>
+                  <dd className="mt-1">
+                    <input
+                      type="password"
+                      placeholder="sk-..."
+                      className="block w-full px-3 py-2 border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm border"
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSettings(prev => {
+                          if (!prev) return prev;
+                          return {
+                            ...prev,
+                            providers: prev.providers.map(p => 
+                              p.id === selectedProviderInfo.id 
+                                ? { ...p, apiKeyInput: val } 
+                                : p
+                            )
+                          };
+                        });
+                      }}
+                    />
+                    <p className="mt-1 text-xs text-gray-500">Enter your key here to save it to the server's .env file.</p>
+                  </dd>
+                </div>
+
+                <div className="sm:col-span-2">
                   <dt className="text-sm font-medium text-gray-500">Capabilities</dt>
                   <dd className="mt-2 text-sm text-gray-900">
                     <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -178,9 +206,9 @@ export const SettingsPage: React.FC = () => {
           <div className="flex justify-end pt-4 border-t border-gray-200">
             <button
               onClick={handleSave}
-              disabled={isSaving || selectedProviderInfo?.status !== 'Configured'}
+              disabled={isSaving}
               className={`inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 ${
-                (isSaving || selectedProviderInfo?.status !== 'Configured') ? 'opacity-50 cursor-not-allowed' : ''
+                isSaving ? 'opacity-50 cursor-not-allowed' : ''
               }`}
             >
               <Save size={16} className="mr-2" />

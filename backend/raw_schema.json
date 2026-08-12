@@ -1,0 +1,325 @@
+{
+  "$defs": {
+    "ExamplesData": {
+      "properties": {
+        "example_tables": {
+          "description": "Extracted tables related to examples",
+          "items": {
+            "type": "string"
+          },
+          "title": "Example Tables",
+          "type": "array"
+        },
+        "reaction_procedure": {
+          "default": "Not disclosed",
+          "description": "The specific steps and procedure for the reaction",
+          "title": "Reaction Procedure",
+          "type": "string"
+        },
+        "experimental_notes": {
+          "default": "Not disclosed",
+          "description": "Any other important synthesis notes or anomalies",
+          "title": "Experimental Notes",
+          "type": "string"
+        }
+      },
+      "title": "ExamplesData",
+      "type": "object"
+    },
+    "ExtractedParameterSchema": {
+      "properties": {
+        "name": {
+          "default": "",
+          "title": "Name",
+          "type": "string"
+        },
+        "category": {
+          "default": "",
+          "title": "Category",
+          "type": "string"
+        },
+        "value": {
+          "default": "",
+          "title": "Value",
+          "type": "string"
+        },
+        "unit": {
+          "default": "",
+          "title": "Unit",
+          "type": "string"
+        },
+        "context": {
+          "default": "",
+          "title": "Context",
+          "type": "string"
+        },
+        "section": {
+          "default": "",
+          "title": "Section",
+          "type": "string"
+        },
+        "example_number": {
+          "default": "",
+          "title": "Example Number",
+          "type": "string"
+        },
+        "source_sentence": {
+          "default": "",
+          "title": "Source Sentence",
+          "type": "string"
+        },
+        "confidence": {
+          "default": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "source_offset": {
+          "default": 0,
+          "title": "Source Offset",
+          "type": "integer"
+        },
+        "extraction_method": {
+          "default": "deterministic",
+          "title": "Extraction Method",
+          "type": "string"
+        }
+      },
+      "title": "ExtractedParameterSchema",
+      "type": "object"
+    },
+    "PatentMetadata": {
+      "properties": {
+        "url": {
+          "default": "",
+          "description": "The source URL of the patent (populated automatically).",
+          "title": "Url",
+          "type": "string"
+        },
+        "patent_number": {
+          "default": "Not disclosed",
+          "description": "The formal patent publication number (e.g., US1234567A)",
+          "title": "Patent Number",
+          "type": "string"
+        },
+        "patent_title": {
+          "default": "Not disclosed",
+          "description": "Title of the patent",
+          "title": "Patent Title",
+          "type": "string"
+        },
+        "assignee": {
+          "default": "Not disclosed",
+          "description": "The company or assignee who owns the patent",
+          "title": "Assignee",
+          "type": "string"
+        },
+        "publication_year": {
+          "default": "Not disclosed",
+          "description": "The year the patent was published",
+          "title": "Publication Year",
+          "type": "string"
+        },
+        "jurisdiction": {
+          "default": "Not disclosed",
+          "description": "The country or jurisdiction of the patent (e.g., US, EP, WO)",
+          "title": "Jurisdiction",
+          "type": "string"
+        },
+        "legal_status": {
+          "default": "Unknown",
+          "description": "The legal status of the patent (e.g. Active, Expired)",
+          "title": "Legal Status",
+          "type": "string"
+        },
+        "quality": {
+          "default": "Not disclosed",
+          "description": "The validation quality of the extraction (High, Medium, Low)",
+          "title": "Quality",
+          "type": "string"
+        },
+        "extraction_score": {
+          "default": 0,
+          "description": "The relative score for candidate sorting",
+          "title": "Extraction Score",
+          "type": "integer"
+        }
+      },
+      "title": "PatentMetadata",
+      "type": "object"
+    },
+    "PolymerizationData": {
+      "properties": {
+        "process": {
+          "default": "Not disclosed",
+          "description": "The type of polymerization (e.g., emulsion, solution, bulk, suspension)",
+          "title": "Process",
+          "type": "string"
+        },
+        "monomers": {
+          "default": "Not disclosed",
+          "description": "Monomers used in the reaction",
+          "title": "Monomers",
+          "type": "string"
+        },
+        "monomer_ratio": {
+          "default": "Not disclosed",
+          "description": "Ratio of monomers used",
+          "title": "Monomer Ratio",
+          "type": "string"
+        },
+        "initiator": {
+          "default": "Not disclosed",
+          "description": "Type and amount of initiator/catalyst used",
+          "title": "Initiator",
+          "type": "string"
+        },
+        "emulsifier": {
+          "default": "Not disclosed",
+          "description": "Type and amount of emulsifier/surfactant used",
+          "title": "Emulsifier",
+          "type": "string"
+        },
+        "catalyst": {
+          "default": "Not disclosed",
+          "description": "Type and amount of catalyst",
+          "title": "Catalyst",
+          "type": "string"
+        },
+        "chain_transfer_agent": {
+          "default": "Not disclosed",
+          "description": "Type and amount of chain transfer agent / modifier",
+          "title": "Chain Transfer Agent",
+          "type": "string"
+        },
+        "coagulation": {
+          "default": "Not disclosed",
+          "description": "Coagulation/flocculation process details",
+          "title": "Coagulation",
+          "type": "string"
+        },
+        "water_amount": {
+          "default": "Not disclosed",
+          "description": "Amount of water or aqueous medium used",
+          "title": "Water Amount",
+          "type": "string"
+        }
+      },
+      "title": "PolymerizationData",
+      "type": "object"
+    },
+    "PropertiesData": {
+      "properties": {
+        "solid_content": {
+          "default": "Not disclosed",
+          "description": "Solid content percentage",
+          "title": "Solid Content",
+          "type": "string"
+        },
+        "mooney_viscosity": {
+          "default": "Not disclosed",
+          "description": "Mooney viscosity",
+          "title": "Mooney Viscosity",
+          "type": "string"
+        },
+        "volatile_matter": {
+          "default": "Not disclosed",
+          "description": "Volatile matter content",
+          "title": "Volatile Matter",
+          "type": "string"
+        },
+        "ash": {
+          "default": "Not disclosed",
+          "description": "Ash content",
+          "title": "Ash",
+          "type": "string"
+        },
+        "other_properties": {
+          "default": "Not disclosed",
+          "description": "Other key properties of the resulting polymer",
+          "title": "Other Properties",
+          "type": "string"
+        }
+      },
+      "title": "PropertiesData",
+      "type": "object"
+    },
+    "ReactionConditions": {
+      "properties": {
+        "temperature": {
+          "default": "Not disclosed",
+          "description": "Polymerization reaction temperature",
+          "title": "Temperature",
+          "type": "string"
+        },
+        "time": {
+          "default": "Not disclosed",
+          "description": "Duration of the polymerization reaction",
+          "title": "Time",
+          "type": "string"
+        },
+        "pressure": {
+          "default": "Not disclosed",
+          "description": "Reaction pressure",
+          "title": "Pressure",
+          "type": "string"
+        },
+        "ph": {
+          "default": "Not disclosed",
+          "description": "Reaction pH",
+          "title": "Ph",
+          "type": "string"
+        },
+        "conversion": {
+          "default": "Not disclosed",
+          "description": "Final monomer conversion percentage",
+          "title": "Conversion",
+          "type": "string"
+        }
+      },
+      "title": "ReactionConditions",
+      "type": "object"
+    }
+  },
+  "description": "Final Schema for extracting structured polymerization data from a single patent.",
+  "properties": {
+    "metadata": {
+      "$ref": "#/$defs/PatentMetadata"
+    },
+    "polymerization": {
+      "$ref": "#/$defs/PolymerizationData"
+    },
+    "reaction_conditions": {
+      "$ref": "#/$defs/ReactionConditions"
+    },
+    "properties": {
+      "$ref": "#/$defs/PropertiesData"
+    },
+    "experimental_notes": {
+      "$ref": "#/$defs/ExamplesData"
+    },
+    "claims": {
+      "description": "Independent claims of the patent",
+      "items": {
+        "type": "string"
+      },
+      "title": "Claims",
+      "type": "array"
+    },
+    "parameters": {
+      "items": {
+        "$ref": "#/$defs/ExtractedParameterSchema"
+      },
+      "title": "Parameters",
+      "type": "array"
+    },
+    "examples": {
+      "items": {
+        "$ref": "#/$defs/app__services__pipeline__schemas__PatentExample-Input__1"
+      },
+      "title": "Examples",
+      "type": "array"
+    }
+  },
+  "title": "PatentExtraction",
+  "type": "object"
+}

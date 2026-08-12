@@ -13,40 +13,14 @@ import markdown
 from docx import Document
 from xhtml2pdf import pisa
 
-from app.core.config import settings
-from app.services.pipeline.schemas import PatentExtraction
-from app.services.llm import llm_client
+from app.services.llm.llm_client import llm_client
+from app.services.pipeline.schemas import ReportPatentEvidence, PatentResearchReport
+from app.services.prompts.patent_prompts import (
+    REPORT_GENERATION_SYSTEM_PROMPT,
+    REPORT_GENERATION_USER_TEMPLATE
+)
 
 logger = logging.getLogger(__name__)
-
-REPORT_SYSTEM_PROMPT = """
-You are an expert polymer scientist and research analyst.
-You have been provided with structured data extracted from multiple patents related to {compound_name}.
-Your task is to synthesize this data into a professional, cohesive technical report.
-The report MUST strictly follow this exact structure:
-
-# {compound_name}
-## POLYMERIZATION / SYNTHESIS PATENT RESEARCH REPORT
-
-### Abstract
-(Approx 250-350 words summarizing the patent landscape, major synthesis approaches, recurring chemistry, and trends).
-
-### Methodology
-(For each patent provided, create a subsection with the Patent Number and Title, and list the extracted parameters in a clean bulleted list).
-
-### Cross-Patent Comparison & Synthesis Trends
-(Identify common technical trends across all analyzed patents. Subsections should include: Emulsifier Selection and Loading, Initiator and Chain Transfer Agent Strategies, Monomer Ratio and Reaction Control, Coagulation and Post-Treatment Conditions).
-
-### References
-(A markdown table containing: Patent Number, Patent Title, Assignee, Jurisdiction, Publication Year, Google Patents URL).
-
-Constraints:
-- DO NOT exceed 5 pages of content.
-- Use ONLY the provided structured extraction data. DO NOT hallucinate.
-- If a parameter is 'Not disclosed', mention it as such.
-- The Google Patents URL in the references MUST be a clickable markdown link using the 'url' field provided.
-- Exclude compounding formulations or end-product manufacturing (focus strictly on raw polymer synthesis).
-"""
 
 class ReportService:
     def __init__(self):
@@ -54,32 +28,140 @@ class ReportService:
         self.export_dir = os.path.join(os.getcwd(), "exports")
         os.makedirs(self.export_dir, exist_ok=True)
 
-    async def generate_markdown_report(self, compound_name: str, extractions: List[PatentExtraction]) -> str:
-        """Generate the markdown report via Gemini using the aggregated extractions."""
-        logger.info("Generating final markdown report for %d patents...", len(extractions))
-        
-        # Serialize the extractions to JSON-like string for Gemini context
-        extractions_data = "\n\n".join(
-            [f"--- Patent {i+1} ---\n{ex.model_dump_json(indent=2)}" for i, ex in enumerate(extractions)]
-        )
-        
-        prompt = (
-            f"Please generate the report for the compound: {compound_name}\n\n"
-            f"Here is the structured extraction data from the relevant patents:\n"
-            f"{extractions_data}\n"
-        )
-        
-        sys_prompt = REPORT_SYSTEM_PROMPT.format(compound_name=compound_name)
+    async def generate_structured_report(self, compound_name: str, extractions: List[ReportPatentEvidence]) -> PatentResearchReport:
+        """Generate the structured report via Gemini using the aggregated extractions."""
+        logger.info("Generating final structured report for %d patents...", len(extractions))
 
-        try:
-            return await llm_client.generate_text(
-                prompt=prompt,
-                system_prompt=sys_prompt,
-                temperature=0.2
-            )
-        except Exception as e:
-            logger.error("Failed to generate markdown report: %s", e)
-            return f"# Error generating report\n\nFailed due to API error: {e}"
+        from app.services.pipeline.report_evidence_service import ReportEvidenceService
+        svc = ReportEvidenceService()
+        extractions_data = svc.serialize_evidence(extractions)
+
+        prompt = REPORT_GENERATION_USER_TEMPLATE.format(
+            compound_name=compound_name,
+            extractions_data=extractions_data
+        )
+
+        sys_prompt = REPORT_GENERATION_SYSTEM_PROMPT.format(compound_name=compound_name)
+
+        max_retries = 2
+        for attempt in range(max_retries):
+            logger.info(f"REPORT GENERATION ATTEMPT {attempt + 1}/{max_retries}")
+
+            try:
+                report_obj, _ = await llm_client.generate_structured(
+                    prompt=prompt,
+                    system_prompt=sys_prompt,
+                    schema=PatentResearchReport,
+                    temperature=0.2
+                )
+
+                # Validate structured response
+                logger.info("=" * 60)
+                logger.info("REPORT STRUCTURED RESPONSE VALIDATION")
+                logger.info("=" * 60)
+                logger.info(f"Response received: YES")
+                logger.info(f"Title: {'PRESENT' if report_obj.title else 'MISSING'}")
+                logger.info(f"Abstract: {'PRESENT' if report_obj.abstract else 'MISSING'}")
+                logger.info(f"Methodology patents: {len(report_obj.methodology_patents)}")
+                logger.info(f"Cross-patent comparison: {len(report_obj.cross_patent_comparison)}")
+                logger.info(f"References: {len(report_obj.references)}")
+                logger.info("=" * 60)
+
+                # Apply safe defaults for missing critical fields
+                if not report_obj.title:
+                    logger.warning("Title missing - applying default fallback")
+                    report_obj.title = "PATENT RESEARCH REPORT"
+                if not report_obj.abstract:
+                    logger.warning("Abstract missing - applying default fallback")
+                    report_obj.abstract = "No abstract provided."
+
+                return report_obj
+
+            except Exception as e:
+                logger.error(f"REPORT GENERATION ATTEMPT {attempt + 1} FAILED: {e}")
+                if attempt < max_retries - 1:
+                    logger.info("Retrying report generation...")
+                    continue
+                else:
+                    logger.error("All report generation attempts failed")
+                    raise e
+
+    def report_to_markdown(self, report: PatentResearchReport) -> str:
+        """Converts the structured report to markdown for PDF/DOCX export."""
+        lines = []
+
+        # Title with safe fallback
+        title = report.title or "PATENT RESEARCH REPORT"
+        lines.append(f"# {title.upper()}")
+
+        # Abstract with safe fallback
+        abstract = report.abstract or "No abstract provided."
+        lines.append("\n## 1. ABSTRACT")
+        lines.append(abstract)
+
+        lines.append("\n## 2. METHODOLOGY")
+        lines.append("### POLYMERIZATION RECIPE EXTRACTIONS")
+
+        for idx, patent in enumerate(report.methodology_patents):
+            lines.append(f"\n#### Patent {idx + 1}")
+            lines.append("\n**Patent Details**")
+
+            pd = patent.patent_details
+            lines.append(f"- Patent Number: {pd.patent_number or 'Not disclosed'}")
+            lines.append(f"- Patent Title: {pd.patent_title or 'Not disclosed'}")
+            lines.append(f"- Assignee: {pd.assignee or 'Not disclosed'}")
+            lines.append(f"- Jurisdiction: {pd.jurisdiction or 'Not disclosed'}")
+            lines.append(f"- Publication Year: {pd.publication_year or 'Not disclosed'}")
+            lines.append(f"- Polymer Type: {pd.polymer_type or 'Not disclosed'}")
+            lines.append(f"- Relevance to target: {pd.relevance_to_target or 'Not disclosed'}")
+
+            lines.append("\n**Polymerization / Synthesis Method**")
+            p = patent.polymerization_method
+            lines.append(f"- Polymerization process: {p.polymerization_process or 'Not disclosed'}")
+            lines.append(f"- Monomer system: {p.monomer_system or 'Not disclosed'}")
+            lines.append(f"- Monomer ratio: {p.monomer_ratio or 'Not disclosed'}")
+            lines.append(f"- Water amount: {p.water_amount or 'Not disclosed'}")
+            lines.append(f"- Emulsifier: {p.emulsifier or 'Not disclosed'}")
+            lines.append(f"- Emulsifier loading: {p.emulsifier_loading or 'Not disclosed'}")
+            lines.append(f"- Initiator: {p.initiator or 'Not disclosed'}")
+            lines.append(f"- Initiator loading: {p.initiator_loading or 'Not disclosed'}")
+            lines.append(f"- Catalyst / activator: {p.catalyst_activator or 'Not disclosed'}")
+            lines.append(f"- Chain-transfer agent: {p.chain_transfer_agent or 'Not disclosed'}")
+            lines.append(f"- Chain-transfer dosage: {p.chain_transfer_dosage or 'Not disclosed'}")
+            lines.append(f"- Polymerization temperature: {p.polymerization_temperature or 'Not disclosed'}")
+            lines.append(f"- Pressure: {p.pressure or 'Not disclosed'}")
+            lines.append(f"- pH: {p.ph or 'Not disclosed'}")
+            lines.append(f"- Reaction time: {p.reaction_time or 'Not disclosed'}")
+            lines.append(f"- Conversion: {p.conversion or 'Not disclosed'}")
+            lines.append(f"- Coagulation conditions: {p.coagulation_conditions or 'Not disclosed'}")
+            lines.append(f"- Post-treatment: {p.post_treatment or 'Not disclosed'}")
+            lines.append(f"- Raw polymer properties: {p.raw_polymer_properties or 'Not disclosed'}")
+
+            lines.append("\n**Relevant Experimental Evidence**")
+            if patent.experimental_evidence:
+                for ev in patent.experimental_evidence:
+                    lines.append(f"- {ev}")
+            else:
+                lines.append("- No experimental evidence provided.")
+
+            lines.append("\n**Technical Relevance**")
+            lines.append(patent.technical_relevance or "No technical relevance provided.")
+
+        lines.append("\n## 3. CROSS-PATENT COMPARISON & SYNTHESIS TRENDS")
+        if report.cross_patent_comparison:
+            for point in report.cross_patent_comparison:
+                lines.append(f"- {point}")
+        else:
+            lines.append("- No cross-patent comparison provided.")
+
+        lines.append("\n## 4. REFERENCES")
+        if report.references:
+            for ref in report.references:
+                lines.append(f"- {ref}")
+        else:
+            lines.append("- No references provided.")
+
+        return "\n".join(lines)
 
     async def export_to_pdf(self, markdown_text: str, file_name: str) -> str:
         """Convert Markdown to HTML, then to PDF using xhtml2pdf."""

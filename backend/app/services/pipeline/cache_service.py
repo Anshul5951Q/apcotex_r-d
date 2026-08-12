@@ -67,25 +67,12 @@ class CacheService:
         return hashlib.md5(key_str.encode("utf-8")).hexdigest()
 
     def get_compound_profile(self, compound: str) -> Optional[object]: # Returns CompoundSearchProfile
-        from app.services.pipeline.schemas import CompoundSearchProfile
-        path = os.path.join(PROFILE_DIR, f"{self._get_profile_key(compound)}.json")
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    return CompoundSearchProfile(**data)
-            except Exception as e:
-                logger.error("Failed to read profile cache for %s: %s", compound, e)
+        logger.info("\nCompound Profile Cache\nStatus: BYPASSED\nReason:\nResearch-Level Cache Disabled\n")
         return None
 
     def save_compound_profile(self, compound: str, profile):
-        path = os.path.join(PROFILE_DIR, f"{self._get_profile_key(compound)}.json")
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(profile.model_dump(), f, indent=2)
-                logger.info("Saved CompoundSearchProfile to cache for: %s", compound)
-        except Exception as e:
-            logger.error("Failed to save profile cache for %s: %s", compound, e)
+        # Disabled
+        pass
 
     # ── Search Cache ──
     def _get_search_key(self, compound: str, jurisdiction: str, comps: list) -> str:
@@ -102,16 +89,10 @@ class CacheService:
 
     # ── Metadata Cache ──
     def get_metadata(self, patent_number: str) -> Optional[dict]:
-        path = os.path.join(META_DIR, f"{patent_number}.json")
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
         return None
 
     def save_metadata(self, patent_number: str, data: dict):
-        path = os.path.join(META_DIR, f"{patent_number}.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+        pass
 
     # ── History ──
     def get_history(self, compound: str) -> dict:

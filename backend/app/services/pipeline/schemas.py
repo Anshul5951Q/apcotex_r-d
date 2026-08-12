@@ -12,7 +12,62 @@ class CandidateState(str, Enum):
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
     LOW = "LOW"
+    REVIEW = "REVIEW"
     REJECTED = "REJECTED"
+
+class RelevanceClass(str, Enum):
+    DIRECT = "DIRECT"
+    INDIRECT = "INDIRECT"
+    IRRELEVANT = "IRRELEVANT"
+
+class MetadataQualification(str, Enum):
+    KEEP = "KEEP"
+    REVIEW = "REVIEW"
+    REJECT = "REJECT"
+
+class ExtractionStatus(str, Enum):
+    FULL = "FULL"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+
+from enum import Enum
+
+class SearchField(str, Enum):
+    TITLE = "TITLE"
+    TAC = "TAC"
+
+class SearchCategory(str, Enum):
+    MANUFACTURING = "MANUFACTURING"
+    PREPARATION = "PREPARATION"
+    POLYMERIZATION = "POLYMERIZATION"
+    PROCESS = "PROCESS"
+    CHEMISTRY = "CHEMISTRY"
+    EXACT = "EXACT"
+    CONSTRAINT = "CONSTRAINT"
+    SYNTHESIS = "SYNTHESIS"
+    SYNONYM = "SYNONYM"
+    BROAD = "BROAD"
+
+class SearchPriority(str, Enum):
+    PRIMARY = "PRIMARY"
+    SECONDARY = "SECONDARY"
+    FALLBACK = "FALLBACK"
+
+class SearchQuery(BaseModel):
+    query: str
+    field: SearchField = SearchField.TITLE
+    category: SearchCategory = SearchCategory.POLYMERIZATION
+    priority: SearchPriority = SearchPriority.PRIMARY
+
+class RankedCandidate(BaseModel):
+    publication_number: str = Field(description="Must perfectly match input publication number")
+    score: int = Field(description="Relevance score from 0-100")
+    decision: str = Field(description="Decision: 'KEEP' or 'REJECT'")
+    reason: str = Field(description="Brief justification for the decision")
+    title_evidence: list[str] = Field(default_factory=list, description="Key phrases from the title supporting the decision")
+
+class RankedCandidateList(BaseModel):
+    ranked_candidates: list[RankedCandidate]
 
 class ConfidenceDimensions(BaseModel):
     compound_evidence: list[str] = Field(default_factory=list)
@@ -24,6 +79,9 @@ class ConfidenceDimensions(BaseModel):
     negative_evidence: list[str] = Field(default_factory=list)
     competing_chemistry: list[str] = Field(default_factory=list)
     search_confidence: int = 0
+    target_chemistry_score: int = 0
+    synthesis_score: int = 0
+    recipe_score: int = 0
     
     @property
     def has_compound_evidence(self) -> bool:
@@ -53,14 +111,57 @@ class ConfidenceDimensions(BaseModel):
 
 class EvidenceLedger(BaseModel):
     state: CandidateState = CandidateState.LOW
+    relevance: RelevanceClass = RelevanceClass.INDIRECT
     dimensions: ConfidenceDimensions = Field(default_factory=ConfidenceDimensions)
     matched_queries: list[str] = Field(default_factory=list)
     query_match_count: int = 0
+    search_families: list[SearchCategory] = Field(default_factory=list)
     history: list[str] = Field(default_factory=list)
     rejection_reason: str = ""
     
     def log(self, message: str):
         self.history.append(message)
+
+class StructuralEvidence(BaseModel):
+    has_preparation_example: bool = False
+    has_experimental_example: bool = False
+    has_working_example: bool = False
+    has_embodiment: bool = False
+    has_detailed_description: bool = False
+    has_claims: bool = False
+    example_count: int = 0
+    table_count: int = 0
+    temperature_count: int = 0
+    pressure_count: int = 0
+    initiator_count: int = 0
+    emulsifier_count: int = 0
+    chain_transfer_count: int = 0
+    conversion_count: int = 0
+    coagulation_count: int = 0
+    wt_percent_count: int = 0
+    phr_count: int = 0
+    numeric_density: float = 0.0
+    example_density: float = 0.0
+
+class ExtractedParameterSchema(BaseModel):
+    name: str = ""
+    category: str = ""
+    value: str = ""
+    unit: str = ""
+    context: str = ""
+    section: str = ""
+    example_number: str = ""
+    source_sentence: str = ""
+    confidence: float = 0.0
+    source_offset: int = 0
+    extraction_method: str = "deterministic"
+
+class PatentExample(BaseModel):
+    number: str = ""
+    type: str = ""
+    title: str = ""
+    raw_text: str = ""
+    extracted_parameters: list[ExtractedParameterSchema] = []
 
 class ParsedPatent(BaseModel):
     """
@@ -74,6 +175,7 @@ class ParsedPatent(BaseModel):
     examples: str = ""
     tables: List[Dict] = Field(default_factory=list)
     claims: str = ""
+    structural_evidence: StructuralEvidence = Field(default_factory=StructuralEvidence)
     
     def get_llm_context(self) -> str:
         """Returns only the relevant sections for the LLM to process."""
@@ -90,6 +192,13 @@ class ParsedPatent(BaseModel):
         if self.tables:
             context.append(f"--- TABLES ---\n{self.tables}")
         return "\n\n".join(context)
+
+class ContentValidationSchema(BaseModel):
+    relevance: RelevanceClass
+    confidence: int
+    target_chemistry_evidence: list[str] = Field(default_factory=list)
+    synthesis_evidence: list[str] = Field(default_factory=list)
+    exclusion_reason: str = ""
 class PatentMetadata(BaseModel):
     url: str = Field(description="The source URL of the patent (populated automatically).", default="")
     patent_number: str = Field(description="The formal patent publication number (e.g., US1234567A)", default="Not disclosed")
@@ -97,6 +206,7 @@ class PatentMetadata(BaseModel):
     assignee: str = Field(description="The company or assignee who owns the patent", default="Not disclosed")
     publication_year: str = Field(description="The year the patent was published", default="Not disclosed")
     jurisdiction: str = Field(description="The country or jurisdiction of the patent (e.g., US, EP, WO)", default="Not disclosed")
+    legal_status: str = Field(description="The legal status of the patent (e.g. Active, Expired)", default="Unknown")
     quality: str = Field(description="The validation quality of the extraction (High, Medium, Low)", default="Not disclosed")
     extraction_score: int = Field(description="The relative score for candidate sorting", default=0)
 
@@ -138,15 +248,22 @@ class PatentExtraction(BaseModel):
     polymerization: PolymerizationData = Field(default_factory=PolymerizationData)
     reaction_conditions: ReactionConditions = Field(default_factory=ReactionConditions)
     properties: PropertiesData = Field(default_factory=PropertiesData)
-    examples: ExamplesData = Field(default_factory=ExamplesData)
+    experimental_notes: ExamplesData = Field(default_factory=ExamplesData)
     claims: list[str] = Field(description="Independent claims of the patent", default_factory=list)
+    parameters: list[ExtractedParameterSchema] = Field(default_factory=list)
+    examples: list[PatentExample] = []
 
+class ExtractionResult(BaseModel):
+    status: ExtractionStatus
+    patent_number: str
+    extraction: PatentExtraction
 
 class CompoundSearchProfile(BaseModel):
     """
     Schema for dynamic compound search profiles generated by the CompoundIntelligenceService.
     Replaces static/hardcoded compound rules.
     """
+    original_input: str = Field(default="", description="The exact user-entered input string (preserved for traceability).")
     compound: str = Field(description="The user's raw input compound.")
     compound_name: str = Field(description="The normalized primary chemical name (e.g., 'Ethylene Propylene Diene Monomer').")
     synonyms: list[str] = Field(description="A broad list of synonyms and acronyms (e.g., ['EPDM', 'Ethylene-Propylene-Diene']).")
@@ -154,6 +271,8 @@ class CompoundSearchProfile(BaseModel):
     chemical_family: str = Field(description="The broad polymer family (e.g., 'EPDM', 'NBR', 'Fluoropolymer').")
     major_monomers: list[str] = Field(description="The individual monomers comprising this compound.")
     alternative_industry_names: list[str] = Field(description="Trade names or alternative industry names.")
+    important_constraints: list[str] = Field(default_factory=list, description="Critical constraints from the original input that must be preserved (e.g., ['low acrylonitrile', 'high cis']).")
+    research_intent: str = Field(default="", description="The research intent (e.g., 'polymerization', 'preparation', 'synthesis').")
     typical_polymerization_routes: list[str] = Field(description="Specific polymerization processes typically used (e.g., ['solution polymerization', 'Ziegler-Natta']).")
     typical_manufacturing_keywords: list[str] = Field(description="Common manufacturing terms (e.g., 'method for manufacturing', 'process for producing').")
     typical_cpc: list[str] = Field(description="Preferred CPC patent classes (e.g., ['C08F', 'C08L']).")
@@ -162,6 +281,78 @@ class CompoundSearchProfile(BaseModel):
     competing_chemistry: list[str] = Field(description="Alternative compounds that indicate the patent is likely NOT about the target compound (e.g., if target is CR, competing might be NBR, SBR).")
     application_keywords: list[str] = Field(description="Negative signals indicating out-of-scope applications or downstream products (e.g., 'glove', 'tire', 'film', 'battery', 'adhesive').")
     manufacturing_keywords: list[str] = Field(description="Words highly indicative of raw synthesis (e.g., 'initiator', 'emulsifier', 'reactor', 'conversion', 'catalyst').")
+    target_composition_keywords: list[str] = Field(default_factory=list, description="Keywords indicating target composition or property (e.g., ['acrylonitrile', 'ACN']).")
+    target_composition_range: str = Field(default="", description="The target numerical range for the composition (e.g., '18-24%').")
+    search_queries: list[SearchQuery] = Field(default_factory=list, description="Dynamically generated search queries.")
+
+class ReportExampleEvidence(BaseModel):
+    example_id: str
+    relevance_classification: str = Field(default="UNKNOWN", description="POLYMERIZATION_RELEVANT, POLYMER_CHARACTERIZATION_RELEVANT, COMPOUNDING_ONLY, IRRELEVANT")
+    extracted_parameters: list[ExtractedParameterSchema] = Field(default_factory=list)
+    
+class ReportPatentEvidence(BaseModel):
+    patent_number: str
+    title: str
+    jurisdiction: str
+    assignee: str
+    publication_year: str
+    url: str
+    discovery_source: str = Field(default="NORMAL", description="NORMAL, COMPETITOR, or WEBSITE")
+    competitor_name: str | None = Field(default=None, description="Competitor name if discovery_source is COMPETITOR")
+    overall_patent_parameters: list[ExtractedParameterSchema] = Field(default_factory=list)
+    examples: list[ReportExampleEvidence] = Field(default_factory=list)
+    technical_findings: list[str] = Field(default_factory=list)
+    limitations_or_missing_data: list[str] = Field(default_factory=list)
+
+class ReportPatentDetails(BaseModel):
+    patent_number: str = Field(description="The formal patent publication number (e.g., US1234567A)")
+    patent_title: str = Field(description="Title of the patent")
+    assignee: str | None = Field(default=None, description="The company or assignee who owns the patent")
+    jurisdiction: str | None = Field(default=None, description="The country or jurisdiction of the patent (e.g., US, EP, WO)")
+    publication_year: str | None = Field(default=None, description="The year the patent was published")
+    polymer_type: str | None = Field(default=None, description="The type of polymer synthesized")
+    relevance_to_target: str = Field(default="Not disclosed", description="Why this patent is relevant to the target compound")
+
+class ReportPatentMethodology(BaseModel):
+    polymerization_process: str | None = Field(default=None, description="Polymerization process (e.g., emulsion polymerization)")
+    monomer_system: str | None = Field(default=None, description="Monomer system used")
+    monomer_ratio: str | None = Field(default=None, description="Exact monomer ratio or contents")
+    water_amount: str | None = Field(default=None, description="Water amount")
+    emulsifier: str | None = Field(default=None, description="Emulsifier used")
+    emulsifier_loading: str | None = Field(default=None, description="Emulsifier loading")
+    initiator: str | None = Field(default=None, description="Initiator used")
+    initiator_loading: str | None = Field(default=None, description="Initiator loading")
+    catalyst_activator: str | None = Field(default=None, description="Catalyst / activator used")
+    chain_transfer_agent: str | None = Field(default=None, description="Chain-transfer agent used")
+    chain_transfer_dosage: str | None = Field(default=None, description="Chain-transfer dosage")
+    polymerization_temperature: str | None = Field(default=None, description="Polymerization temperature")
+    pressure: str | None = Field(default=None, description="Pressure")
+    ph: str | None = Field(default=None, description="pH")
+    reaction_time: str | None = Field(default=None, description="Reaction time")
+    conversion: str | None = Field(default=None, description="Conversion")
+    coagulation_conditions: str | None = Field(default=None, description="Coagulation conditions")
+    post_treatment: str | None = Field(default=None, description="Post-treatment")
+    raw_polymer_properties: str | None = Field(default=None, description="Raw polymer properties")
+
+class ReportPatent(BaseModel):
+    patent_details: ReportPatentDetails
+    polymerization_method: ReportPatentMethodology
+    experimental_evidence: list[str] = Field(description="List of logical bullet points synthesizing the examples")
+    technical_relevance: str = Field(description="Explanation of WHY the patent is relevant to the requested polymerization research")
+
+class PatentResearchReport(BaseModel):
+    title: str | None = Field(default=None, description="Title of the report")
+    abstract: str | None = Field(default=None, description="Abstract of the report")
+    methodology_patents: list[ReportPatent] = Field(description="List of extracted patents and their methodologies", default_factory=list)
+    cross_patent_comparison: list[str] = Field(description="Cross-patent comparison and synthesis trends (concise bullet points)", default_factory=list)
+    references: list[str] = Field(description="List of references (only the selected patents with URLs)", default_factory=list)
+
+class PatentBatchFindings(BaseModel):
+    patent_number: str
+    findings: str
+
+class BatchAnalysisResult(BaseModel):
+    patent_findings: list[PatentBatchFindings] = Field(default_factory=list)
 
 class PatentRank(BaseModel):
     """

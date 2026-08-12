@@ -68,42 +68,55 @@ class ResearchService:
         De-duplication: if a non-failed run with an identical cache key
         already exists for this user, return it instead of creating a new one.
         """
-        cache_key = self.generate_cache_key(
-            data.compound_name,
-            data.selected_sources,
-            data.publication_filter,
-        )
+        logger.info("[RESEARCH REQUEST] ResearchService.create_run() started")
+        try:
+            cache_key = self.generate_cache_key(
+                data.compound_name,
+                data.selected_sources,
+                data.publication_filter,
+            )
+            logger.info("[RESEARCH REQUEST] Cache key generated: %s", cache_key)
 
-        existing = await self._repo.get_by_cache_key(cache_key)
-        # if existing and existing.created_by == current_user.id and existing.status == RunStatus.COMPLETED:
-        #     logger.info(
-        #         "Cache hit — returning completed run %s for user %s",
-        #         existing.id,
-        #         current_user.id,
-        #     )
-        #     return existing
+            existing = await self._repo.get_by_cache_key(cache_key)
+            # if existing and existing.created_by == current_user.id and existing.status == RunStatus.COMPLETED:
+            #     logger.info(
+            #         "Cache hit — returning completed run %s for user %s",
+            #         existing.id,
+            #         current_user.id,
+            #     )
+            #     return existing
 
-        run = ResearchRun(
-            compound_name=data.compound_name,
-            competitors=data.competitors,
-            mentioned_websites=data.mentioned_websites,
-            publication_filter=data.publication_filter,
-            selected_sources=data.selected_sources,
-            status=RunStatus.PENDING,
-            cache_key=cache_key,
-            report_version=1,
-            created_by=current_user.id,
-        )
-        run = await self._repo.create(run)
-        # Commit the transaction so the background task can see the run in its own session
-        await self._repo._session.commit()
-        logger.info("Created ResearchRun %s for user %s", run.id, current_user.id)
+            logger.info("[RESEARCH REQUEST] Creating ResearchRun object")
+            run = ResearchRun(
+                compound_name=data.compound_name,
+                competitors=data.competitors,
+                mentioned_websites=data.mentioned_websites,
+                publication_filter=data.publication_filter,
+                selected_sources=data.selected_sources,
+                status=RunStatus.PENDING,
+                cache_key=cache_key,
+                report_version=1,
+                created_by=current_user.id,
+            )
+            logger.info("[RESEARCH REQUEST] Calling repo.create()")
+            run = await self._repo.create(run)
+            logger.info("[RESEARCH REQUEST] ResearchRun created in DB: %s", run.id)
+            # Commit the transaction so the background task can see the run in its own session
+            await self._repo._session.commit()
+            logger.info("[RESEARCH REQUEST] Transaction committed")
 
-        # Spawn background pipeline
-        orchestrator = PipelineOrchestrator(run.id)
-        asyncio.create_task(orchestrator.execute())
+            # Spawn background pipeline
+            logger.info("[RESEARCH REQUEST] Creating PipelineOrchestrator")
+            orchestrator = PipelineOrchestrator(run.id)
+            logger.info("[RESEARCH REQUEST] PipelineOrchestrator created")
+            logger.info("[RESEARCH REQUEST] Starting pipeline execution")
+            asyncio.create_task(orchestrator.execute())
+            logger.info("[RESEARCH REQUEST] Pipeline task created")
 
-        return run
+            return run
+        except Exception as e:
+            logger.error("[RESEARCH REQUEST FAILED] Stage: ResearchService.create_run() | Exception: %s | Message: %s", type(e).__name__, str(e))
+            raise
 
     # ── List ──────────────────────────────────────────────────────────────────
 

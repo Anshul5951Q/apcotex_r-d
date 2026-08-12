@@ -1,0 +1,139 @@
+{
+  "compound": "Low Acrylonitrile Nitrile Butadiene Rubber",
+  "compound_name": "Nitrile Butadiene Rubber (low acrylonitrile content)",
+  "synonyms": [
+    "Low ACN NBR",
+    "Low Acrylonitrile NBR",
+    "Nitrile Rubber (low ACN)",
+    "Buna-N (low ACN)",
+    "Perbunan (low ACN)",
+    "Chemigum (low ACN)",
+    "Hycar (low ACN)",
+    "Krynac (low ACN)",
+    "Nipol (low ACN)",
+    "NBR-L"
+  ],
+  "abbreviations": [
+    "NBR",
+    "LNBR",
+    "NBR-L",
+    "ACN-NBR"
+  ],
+  "chemical_family": "Nitrile Rubber",
+  "major_monomers": [
+    "Acrylonitrile",
+    "Butadiene",
+    "1,3-Butadiene",
+    "Propenenitrile"
+  ],
+  "alternative_industry_names": [
+    "Perbunan N",
+    "Chemigum N",
+    "Hycar N",
+    "Krynac N",
+    "Nipol N",
+    "Zetpol (if hydrogenated, but often mentioned in context)"
+  ],
+  "typical_polymerization_routes": [
+    "Emulsion Polymerization",
+    "Solution Polymerization",
+    "Free Radical Polymerization",
+    "Batch Polymerization",
+    "Continuous Polymerization"
+  ],
+  "typical_manufacturing_keywords": [
+    "method for manufacturing",
+    "process for producing",
+    "preparation method",
+    "synthesis of",
+    "polymerization of",
+    "copolymerization of",
+    "producing nitrile rubber",
+    "manufacturing NBR"
+  ],
+  "typical_cpc": [
+    "C08F236/12",
+    "C08F2/00",
+    "C08F2/22",
+    "C08L9/02",
+    "C08L9/04"
+  ],
+  "typical_ipc": [
+    "C08F236/12",
+    "C08F2/00",
+    "C08F2/22",
+    "C08L9/02",
+    "C08L9/04"
+  ],
+  "related_chemistry": [
+    "Hydrogenated Nitrile Butadiene Rubber",
+    "HNBR",
+    "Carboxylated Nitrile Butadiene Rubber",
+    "XNBR",
+    "PVC/NBR blend",
+    "Styrene Butadiene Rubber",
+    "SBR",
+    "Polybutadiene",
+    "Butadiene Rubber",
+    "BR",
+    "Acrylonitrile content",
+    "Monomer ratio"
+  ],
+  "competing_chemistry": [
+    "Styrene Butadiene Rubber",
+    "SBR",
+    "Ethylene Propylene Diene Monomer",
+    "EPDM",
+    "Chloroprene Rubber",
+    "CR",
+    "Butyl Rubber",
+    "IIR",
+    "Fluoroelastomer",
+    "FKM",
+    "Acrylic Rubber",
+    "ACM",
+    "Silicone Rubber",
+    "VMQ"
+  ],
+  "application_keywords": [
+    "gasket",
+    "seal",
+    "hose",
+    "O-ring",
+    "glove",
+    "fuel tank",
+    "automotive part",
+    "oil resistance",
+    "chemical resistance",
+    "footwear",
+    "roller",
+    "belt",
+    "cable",
+    "diaphragm",
+    "packing",
+    "damping",
+    "vibration"
+  ],
+  "manufacturing_keywords": [
+    "polymerization",
+    "synthesis",
+    "initiator",
+    "emulsifier",
+    "catalyst",
+    "reactor",
+    "conversion",
+    "monomer feed",
+    "chain transfer agent",
+    "coagulant",
+    "drying",
+    "vulcanization",
+    "crosslinking",
+    "latex",
+    "suspension",
+    "emulsion",
+    "solvent",
+    "purification",
+    "stabilizer",
+    "antioxidant"
+  ]
+}

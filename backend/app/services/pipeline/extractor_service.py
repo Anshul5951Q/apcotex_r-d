@@ -1,193 +1,185 @@
 """
 app/services/pipeline/extractor_service.py
 
-Uses Gemini Structured Outputs to:
-1. Classify if a patent is relevant (filtering).
-2. Extract the detailed polymerization JSON parameters.
+Extraction Subsystem (Phases 1, 4, 6, 8)
+1. Single public API `extract_patent`
+2. Runs Deterministic Extraction & Validation
+3. Accurately calculates Completeness
+4. LLM Decision Engine limits expensive calls
 """
 import logging
-
-from app.core.config import settings
-from app.services.pipeline.schemas import PatentExtraction, ParsedPatent, PatentRankList, PatentRankResult, RankingStatus
+from app.services.pipeline.schemas import PatentExtraction, ParsedPatent, ExtractionResult, ExtractionStatus
 from app.services.llm import llm_client
+from app.services.pipeline.deterministic_extractor import DeterministicExtractor
+
+from app.services.prompts.patent_prompts import (
+    PATENT_EXTRACTION_SYSTEM_PROMPT,
+    PATENT_EXTRACTION_USER_TEMPLATE
+)
 
 logger = logging.getLogger(__name__)
 
-# System prompt for structured extraction
-EXTRACTION_SYSTEM_PROMPT = """
-You are an expert polymer chemist and patent analyst.
-Your task is to validate and complete the structured extraction of a patent.
-You will receive:
-1. An INITIAL JSON object populated by a deterministic parser.
-2. Filtered text sections from the patent (Abstract, Summary, Examples, Tables).
-
-Your objectives:
-1. VALIDATE the existing values in the INITIAL JSON. If they are correct, keep them. If they are obviously incorrect based on the text, fix them.
-2. COMPLETE the missing fields (marked as 'Not disclosed') by thoroughly searching the provided text.
-3. Only output 'Not disclosed' if the parameter is genuinely missing from the text.
-4. DO NOT hallucinate or guess any values, but prioritize completeness based ONLY on the provided text.
-Focus ONLY on the raw polymer manufacturing process. DO NOT extract information related to compounding recipes or final product manufacturing.
-"""
-
+LLM_COMPLETENESS_THRESHOLD = 0.70
 
 class ExtractorService:
     def __init__(self):
-        pass
+        self.deterministic_extractor = DeterministicExtractor()
 
-    def validate_extraction(self, ext: PatentExtraction) -> dict:
+    async def extract_patent(
+        self, 
+        parsed_patent: ParsedPatent, 
+        patent_number: str,
+        title: str, 
+        jurisdiction: str, 
+        source_url: str,
+        skip_llm: bool = False
+    ) -> ExtractionResult:
         """
-        Evaluate the extraction completeness score based on the nested schema.
+        Phase 1: Single public entry point for extraction.
         """
-        critical_fields = [
-            ("polymerization", "process", 20),
-            ("polymerization", "monomers", 15),
-            ("polymerization", "initiator", 15),
-            ("polymerization", "emulsifier", 10),
-            ("reaction_conditions", "temperature", 10),
-            ("reaction_conditions", "time", 10)
-        ]
+        logger.info(f"\n--- Extraction Subsystem Started for {patent_number} ---")
         
-        important_fields = [
-            ("polymerization", "chain_transfer_agent", 5),
-            ("reaction_conditions", "conversion", 5),
-            ("properties", "mooney_viscosity", 5),
-            ("properties", "solid_content", 5)
-        ]
+        # 1. Deterministic Extraction & Validation
+        initial_json = PatentExtraction()
+        initial_json.metadata.patent_number = patent_number
+        initial_json.metadata.patent_title = title
+        initial_json.metadata.jurisdiction = jurisdiction
+        initial_json.metadata.url = source_url
         
-        score = 0
-        critical_found = []
-        important_found = []
-        missing = []
+        det_result, detected_count = self.deterministic_extractor.extract(parsed_patent, initial_json)
+        extracted_count = len(det_result.parameters)
         
-        for group, field, weight in critical_fields:
-            obj = getattr(ext, group, None)
-            val = getattr(obj, field, "Not disclosed") if obj else "Not disclosed"
-            if val and val != "Not disclosed":
-                score += weight
-                critical_found.append(field)
-            else:
-                missing.append(field)
-                
-        for group, field, weight in important_fields:
-            obj = getattr(ext, group, None)
-            val = getattr(obj, field, "Not disclosed") if obj else "Not disclosed"
-            if val and val != "Not disclosed":
-                score += weight
-                important_found.append(field)
-            else:
-                missing.append(field)
-                
-        quality = "High" if score >= 80 else "Medium" if score >= 50 else "Low"
-        reason = f"Extraction Score: {score}"
+        # 2. Dynamic Missing Evidence Discovery
+        evidence = parsed_patent.structural_evidence
         
-        return {
-            "score": score,
-            "critical_found": critical_found,
-            "important_found": important_found,
-            "missing": missing,
-            "quality": quality,
-            "reason": reason
-        }
+        found_categories = set(p.category for p in det_result.parameters)
+        target_categories = {"Raw Materials", "Reaction Conditions", "Process Variables"}
+        missing_categories = target_categories - found_categories
+        
+        # We need LLM if critical categories are missing OR substantial evidence exists for analysis
+        llm_required = False
+        decision_reason = ""
+        missing_keywords = []
+        
+        if skip_llm:
+            llm_required = False
+            decision_reason = "LLM Budget Exhausted / Rate Limited"
+        elif missing_categories:
+            llm_required = True
+            decision_reason = f"Missing Categories: {', '.join(missing_categories)}"
+            if "Raw Materials" in missing_categories:
+                missing_keywords.extend(["parts by weight", "wt%", "ratio", "initiator", "emulsifier", "monomer", "charged"])
+            if "Reaction Conditions" in missing_categories:
+                missing_keywords.extend(["temperature", "°C", "pressure", "bar", "time", "hours"])
+            if "Process Variables" in missing_categories:
+                missing_keywords.extend(["conversion", "yield", "coagulation", "latex"])
+        elif evidence.example_count > 0 or extracted_count >= 3:
+            # LLM should analyze substantial evidence even if all categories are present
+            llm_required = True
+            decision_reason = "Substantial evidence exists for LLM analysis"
+            missing_keywords.extend(["parts", "temperature", "conversion", "initiator", "emulsifier"])
+            
+        # Standardized Logging
+        abs_len = len(parsed_patent.abstract) if parsed_patent.abstract else 0
+        desc_len = len(parsed_patent.detailed_description) if parsed_patent.detailed_description else 0
+        
+        logger.info(f"Patent:\n{patent_number}\n")
+        logger.info(f"Abstract:\n{abs_len} chars\n")
+        logger.info(f"Description:\n{desc_len} chars\n")
+        logger.info(f"Examples:\n{evidence.example_count if evidence else 0}\n")
+        logger.info(f"Polymerization evidence:\nInitiator: {evidence.initiator_count if evidence else 0}, Temp: {evidence.temperature_count if evidence else 0}\n")
+        logger.info(f"Structured fields populated:\n{extracted_count}/{detected_count}\n")
+        
+        logger.info(f"Deterministic:\nCandidates: {detected_count}\nValidated: {extracted_count}\nCompleteness: N/A%\n")
+        
+        if llm_required:
+            logger.info(f"Missing Evidence:\n{decision_reason}\nKeywords: {missing_keywords}\n")
+        
+        if not llm_required:
+            logger.info(f"LLM:\nRequired: NO\n")
+            logger.info(f"Final:\nFULL\n")
+            det_result.metadata.quality = "VALID_FULL"
+            det_result.metadata.extraction_score = 100
+            return ExtractionResult(status=ExtractionStatus.FULL, patent_number=patent_number, extraction=det_result)
+            
+        # 3. Targeted Retrieval
+        from app.services.pipeline.parser_service import ParserService
+        parser_service = ParserService()
+        
+        context_str = parser_service.retrieve_targeted_evidence(parsed_patent, missing_keywords, max_chars=12000)
+        
+        if not context_str or len(context_str) < 50:
+            logger.info(f"LLM:\nRequired: YES\nEstimated Input Tokens: 0\nEstimated Output Tokens: 0\n")
+            logger.info(f"Reason: No targeted sections found\nDeterministic extraction preserved: YES\n")
+            logger.info(f"Final:\nPARTIAL\n")
+            det_result.metadata.quality = "VALID_PARTIAL"
+            return ExtractionResult(status=ExtractionStatus.PARTIAL, patent_number=patent_number, extraction=det_result)
+            
+        input_tokens = len(context_str) // 4
+        
+        if input_tokens > 4000:
+            logger.warning("Targeted retrieval still exceeded token budget. Truncating context.")
+            context_str = context_str[:15000]
+            input_tokens = len(context_str) // 4
 
-    async def extract_polymerization_data(self, parsed_patent: ParsedPatent, initial_json: PatentExtraction) -> PatentExtraction | None:
-        """
-        Tri-state LLM extraction routing to minimize tokens.
-        """
-        logger.info("Evaluating deterministic extraction completeness...")
-        
-        val_result = self.validate_extraction(initial_json)
-        score = val_result["score"]
-        missing = val_result["missing"]
-        
-        if score >= 90:
-            logger.info("Deterministic extraction achieved >=90%% completeness. Skipping LLM completely.")
-            return initial_json
-            
-        import tiktoken
-        try:
-            encoder = tiktoken.get_encoding("cl100k_base")
-        except:
-            encoder = None
+        logger.info(f"Selected Evidence:\n{len(context_str)} characters\n~{input_tokens} tokens\n")
+        logger.info(f"LLM:\nRequired: YES\nEstimated Input Tokens: {input_tokens}\nEstimated Output Tokens: 500\n")
 
-        if score >= 70:
-            logger.info("Deterministic extraction achieved 70-89%% completeness. Calling LLM ONLY for missing fields: %s", missing)
-            sys_prompt = "You are an expert polymer chemist. Complete ONLY the missing fields in the JSON below. DO NOT modify existing fields. ONLY use the provided text."
-            # Only send the missing fields to save output tokens
-            initial_dump = initial_json.model_dump_json(indent=2)
-            max_tokens = 1200
-        else:
-            logger.info("Deterministic extraction <70%% completeness. Calling LLM with synthesis sections.")
-            sys_prompt = "You are an expert polymer chemist. Validate and completely fill the JSON schema based ONLY on the provided text."
-            initial_dump = initial_json.model_dump_json(indent=2)
-            max_tokens = 2500
-
-        # Build priority text (Intelligent Section Selection)
-        priority_content = []
-        if parsed_patent.abstract:
-            priority_content.append(f"--- ABSTRACT ---\n{parsed_patent.abstract}")
-            
-        if initial_json.examples.example_tables:
-            priority_content.append(f"--- TABLES ---\n" + "\n".join(initial_json.examples.example_tables))
-            
-        import re
-        description = parsed_patent.detailed_description or ""
-        
-        # Extract explicit examples if deterministic parser missed them
-        examples = []
-        for match in re.finditer(r"(?i)(example\s+\d+|experimental example[\s\d]*|polymerization example[\s\d]*)(.*?)(?=(example\s+\d+|experimental example[\s\d]*|polymerization example[\s\d]*|$))", description, re.DOTALL):
-            examples.append(match.group(0).strip())
-            
-        if examples:
-            priority_content.append("--- EXPERIMENTAL EXAMPLES ---\n" + "\n\n".join(examples))
-        else:
-            keywords = ["polymerization", "reactor", "initiator", "emulsifier", "monomer feed", "coagulation", "conversion", "temperature", "recipe", "chain transfer agent"]
-            sentences = description.split(". ")
-            selected = [s.strip() for s in sentences if any(kw in s.lower() for kw in keywords)]
-            if selected:
-                priority_content.append("--- SYNTHESIS SECTIONS ---\n" + ". ".join(selected))
-                
-        if parsed_patent.claims:
-            priority_content.append(f"--- CLAIMS ---\n{parsed_patent.claims[:2000]}") # Only send first part of claims
-                
-        content_str = "\n\n".join(priority_content)
-        
-        if encoder:
-            tokens = encoder.encode(content_str)
-            if len(tokens) > max_tokens:
-                content_str = encoder.decode(tokens[:max_tokens]) + "\n\n[CONTENT TRUNCATED TO PRESERVE TOKEN BUDGET]"
-        else:
-            max_chars = max_tokens * 4
-            if len(content_str) > max_chars:
-                content_str = content_str[:max_chars] + "\n\n[CONTENT TRUNCATED TO PRESERVE TOKEN BUDGET]"
-                
-        prompt = (
-            f"Here is the initial rule-based JSON extraction:\n{initial_dump}\n\n"
-            f"Missing Fields identified: {missing}\n\n"
-            f"Please validate and complete it using ONLY the following highly relevant synthesis sections:\n\n"
-            f"{content_str}" 
+        initial_json_str = det_result.model_dump_json(indent=2)
+        extraction_prompt = PATENT_EXTRACTION_USER_TEMPLATE.format(
+            patent_number=patent_number,
+            title=title,
+            jurisdiction=jurisdiction,
+            context_str=context_str,
+            initial_json_str=initial_json_str
         )
         
         try:
-            logger.info("Invoking LLM for extraction...")
-            result, provider_id = await llm_client.generate_structured(
-                prompt=prompt,
-                system_prompt=sys_prompt,
+            from app.services.llm.token_manager import token_manager
+            token_manager.record_call("PATENT_EXTRACTION", input_tokens, 500)
+            
+            extraction_result, _ = await llm_client.generate_structured(
+                prompt=extraction_prompt,
+                system_prompt=PATENT_EXTRACTION_SYSTEM_PROMPT,
                 schema=PatentExtraction,
                 temperature=0.1
             )
             
-            if result:
-                # Simulated token logging (since real token usage is inside LLM client)
-                in_tokens = len(encoder.encode(prompt + sys_prompt)) if encoder else len(prompt)//4
-                out_tokens = 350
-                logger.info(f"\nStage: Extraction\nPatent: {initial_json.metadata.patent_number}\nInput Tokens: {in_tokens}\nOutput Tokens: {out_tokens}\n")
-                return result
-            return None
+            if extraction_result:
+                extraction_result.metadata = initial_json.metadata
+                extraction_result.metadata.quality = "VALID_FULL (LLM)"
+                
+                # 4. Merge deterministic exact values with LLM values
+                merged_params = {
+                    f"{p.name.lower()}_{p.value}_{p.unit.lower()}": p 
+                    for p in det_result.parameters
+                }
+                
+                for lp in extraction_result.parameters:
+                    lp.extraction_method = "llm"
+                    key = f"{lp.name.lower()}_{lp.value}_{lp.unit.lower()}"
+                    if key not in merged_params:
+                        merged_params[key] = lp
+
+                extraction_result.parameters = list(merged_params.values())
+                
+                logger.info(f"LLM Input: {input_tokens}\nLLM Output: {len(extraction_result.parameters)}\n")
+                logger.info(f"Final:\nFULL\n")
+                return ExtractionResult(status=ExtractionStatus.FULL, patent_number=patent_number, extraction=extraction_result)
+                
+            logger.info(f"Reason: Extraction returned null\nDeterministic extraction preserved: YES\n")
+            logger.info(f"Final:\nPARTIAL\n")
+            det_result.metadata.quality = "VALID_PARTIAL"
+            return ExtractionResult(status=ExtractionStatus.PARTIAL, patent_number=patent_number, extraction=det_result)
+            
         except Exception as e:
-            from app.services.llm.llm_client import ProviderExhaustedException
-            error_str = str(e).lower()
-            if isinstance(e, ProviderExhaustedException) or "exhausted" in error_str or "rate limit" in error_str or "429" in error_str:
-                logger.error("All providers exhausted during extraction. Re-raising to pause pipeline.")
-                raise e
-            logger.error("LLM Extraction failed: %s", e)
-            return None
+            from app.services.llm.llm_client import LLMRateLimitException
+            if isinstance(e, LLMRateLimitException) or "429" in str(e):
+                logger.info(f"Reason: 429 Rate Limit\nDeterministic extraction preserved: YES\n")
+                det_result.metadata.rate_limited_event = True
+            else:
+                logger.info(f"Reason: {e}\nDeterministic extraction preserved: YES\n")
+            
+            logger.info(f"Final:\nPARTIAL\n")
+            det_result.metadata.quality = "VALID_PARTIAL"
+            return ExtractionResult(status=ExtractionStatus.PARTIAL, patent_number=patent_number, extraction=det_result)

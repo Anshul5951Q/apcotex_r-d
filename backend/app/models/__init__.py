@@ -10,6 +10,11 @@ from app.models.report_metadata import ReportMetadata
 from app.models.report_file import ReportFile, ReportFileType
 from app.models.app_config import AppConfig
 from app.models.patent_document import PatentDocument
+from app.models.patent_extraction import PatentExtraction
+from app.models.extracted_parameter import ExtractedParameter
+from app.models.search_query import SearchQueryModel, SearchQueryStatus
+from app.models.search_result import SearchResult, TitleScreeningStatus
+from app.models.extraction_batch import ExtractionBatch, BatchStatus
 
 __all__ = [
     "User",
@@ -21,4 +26,12 @@ __all__ = [
     "ReportFileType",
     "AppConfig",
     "PatentDocument",
+    "PatentExtraction",
+    "ExtractedParameter",
+    "SearchQueryModel",
+    "SearchQueryStatus",
+    "SearchResult",
+    "TitleScreeningStatus",
+    "ExtractionBatch",
+    "BatchStatus",
 ]

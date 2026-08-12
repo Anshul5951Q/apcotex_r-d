@@ -11,6 +11,7 @@ from dotenv import dotenv_values
 from app.core.config import settings
 from app.services.llm.base import BaseLLMProvider
 from app.services.llm.gemini_provider import GeminiProvider
+from app.services.llm.openai_provider import OpenAIProvider
 from app.services.llm.openai_compatible_provider import OpenAICompatibleProvider
 
 # Provider definitions
@@ -97,10 +98,22 @@ def instantiate_provider(provider_id: str) -> BaseLLMProvider:
     pdef = PROVIDER_DEFINITIONS[pid]
     api_key = _get_api_key(pdef["env_key"])
     
+    import logging
+    logger = logging.getLogger(__name__)
+    
     if pid == "gemini":
+        logger.info(f"LLM Provider: gemini")
+        logger.info(f"Gemini Model: {settings.GEMINI_MODEL if hasattr(settings, 'GEMINI_MODEL') else 'gemini-2.5-flash'}")
+        logger.info(f"Gemini API Key: configured")
         return GeminiProvider(api_key=api_key)
         
-    if pid in ["openai", "grok", "deepseek", "qwen", "groq"]:
+    if pid == "openai":
+        logger.info(f"LLM Provider: openai")
+        logger.info(f"LLM Model: {settings.OPENAI_MODEL}")
+        logger.info(f"OpenAI API Key: configured")
+        return OpenAIProvider(api_key=api_key, model_name=settings.OPENAI_MODEL)
+        
+    if pid in ["grok", "deepseek", "qwen", "groq"]:
         return OpenAICompatibleProvider(
             api_key=api_key,
             base_url=pdef["base_url"],

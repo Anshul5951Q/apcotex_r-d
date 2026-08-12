@@ -49,7 +49,7 @@ const PUBLICATION_DATE_OPTIONS: {
 
 const PATENT_SOURCES = ["Google Patents", "Espacenet", "USPTO"];
 const JURISDICTIONS = ["US", "EU", "IN", "CN", "JP", "KR", "WO", "Other"];
-const STATUS_ORDER = ["PENDING", "SEARCHING", "FILTERING", "EXTRACTING", "GENERATING", "COMPLETED"];
+const STATUS_ORDER = ["PENDING", "SEARCHING", "FILTERING", "EXTRACTING", "GENERATING", "COMPLETED", "COMPLETED_PARTIAL"];
 
 export function LiteratureReview() {
   const navigate = useNavigate();
@@ -80,7 +80,7 @@ export function LiteratureReview() {
 
   // Polling logic
   useEffect(() => {
-    if (state.researchRunId && state.status !== "COMPLETED" && state.status !== "FAILED" && state.status !== "CANCELLED") {
+    if (state.researchRunId && state.status !== "COMPLETED" && state.status !== "COMPLETED_PARTIAL" && state.status !== "FAILED" && state.status !== "CANCELLED") {
       if (pollingRef.current) clearInterval(pollingRef.current);
       
       pollingRef.current = setInterval(async () => {
@@ -88,7 +88,7 @@ export function LiteratureReview() {
           const run = await pollResearchStatus(state.researchRunId!);
           setState({ status: run.status });
           
-          if (run.status === "COMPLETED") {
+          if (run.status === "COMPLETED" || run.status === "COMPLETED_PARTIAL") {
             if (pollingRef.current) clearInterval(pollingRef.current);
             // Fetch the final HTML report
             try {
@@ -96,7 +96,9 @@ export function LiteratureReview() {
               setState({ 
                 reportHtml: content.html, 
                 reportMarkdown: content.markdown,
-                recipeData: content.extractions
+                recipeData: content.extractions,
+                extractions: content.extractions,
+                structuredReport: content.structuredReport
               });
             } catch (err) {
               setState({ error: "Failed to load report content." });
@@ -197,13 +199,14 @@ export function LiteratureReview() {
 
       // If the run is already COMPLETED (e.g. cache hit), we must immediately fetch the report
       // Otherwise, the polling hook won't trigger and the UI will be stuck in a blank state.
-      if (run.status === "COMPLETED") {
+      if (run.status === "COMPLETED" || run.status === "COMPLETED_PARTIAL") {
         try {
           const content = await getReportContent(run.id);
           setState({ 
             reportHtml: content.html, 
             reportMarkdown: content.markdown,
-            recipeData: content.extractions
+            recipeData: content.extractions,
+            extractions: content.extractions
           });
         } catch (err) {
           setState({ error: "Failed to load cached report content." });
@@ -238,7 +241,7 @@ export function LiteratureReview() {
     
     const isPast = stepIndex < currentIndex;
     const isCurrent = stepIndex === currentIndex;
-    const isCompleted = state.status === "COMPLETED" || isPast;
+    const isCompleted = state.status === "COMPLETED" || state.status === "COMPLETED_PARTIAL" || isPast;
     
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -258,8 +261,8 @@ export function LiteratureReview() {
 
   // Determine which page state to show
   const isForm = !state.researchRunId && !state.error;
-  const isProgress = state.researchRunId && state.status !== "COMPLETED" && !state.error;
-  const isResults = state.status === "COMPLETED" && state.reportHtml;
+  const isProgress = state.researchRunId && state.status !== "COMPLETED" && state.status !== "COMPLETED_PARTIAL" && !state.error;
+  const isResults = (state.status === "COMPLETED" || state.status === "COMPLETED_PARTIAL") && state.reportHtml;
   const isError = !!state.error;
 
   return (

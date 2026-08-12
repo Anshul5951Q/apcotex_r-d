@@ -32,6 +32,7 @@ class RunStatus(str, Enum):
     EXTRACTING = "EXTRACTING"
     GENERATING = "GENERATING"
     COMPLETED = "COMPLETED"
+    COMPLETED_PARTIAL = "COMPLETED_PARTIAL"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
     PAUSED = "PAUSED"
@@ -66,6 +67,9 @@ class ResearchRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         JSON, nullable=False, default=list, server_default="[]"
     )
     mentioned_websites: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+    website_evidences: Mapped[list] = mapped_column(
         JSON, nullable=False, default=list, server_default="[]"
     )
     publication_filter: Mapped[dict | None] = mapped_column(

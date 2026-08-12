@@ -8,13 +8,16 @@ import {
 
 export type RunStatus = 
   | "PENDING"
+  | "QUEUED"
   | "SEARCHING"
   | "FILTERING"
   | "EXTRACTING"
   | "GENERATING"
   | "COMPLETED"
+  | "COMPLETED_PARTIAL"
   | "FAILED"
-  | "CANCELLED";
+  | "CANCELLED"
+  | "PAUSED";
 
 export interface PatentResearchState {
   researchRunId: string | null;
@@ -22,6 +25,8 @@ export interface PatentResearchState {
   reportHtml: string | null;
   reportMarkdown: string | null;
   recipeData: any | null; // Extracted JSON properties for the simulator
+  extractions: any[] | null; // Extracted JSON per patent
+  structuredReport: any | null; // Canonical PatentResearchReport JSON
   error: string | null;
   compoundName: string | null;
   createdDate: string | null;
@@ -39,6 +44,8 @@ const defaultState: PatentResearchState = {
   reportHtml: null,
   reportMarkdown: null,
   recipeData: null,
+  extractions: null,
+  structuredReport: null,
   error: null,
   compoundName: null,
   createdDate: null,

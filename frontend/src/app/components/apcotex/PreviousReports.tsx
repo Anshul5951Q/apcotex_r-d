@@ -38,7 +38,7 @@ export function PreviousReports({ onClose }: { onClose: () => void }) {
   };
 
   const getStatusColor = (status: string) => {
-    if (status === "COMPLETED") return GREEN;
+    if (status === "COMPLETED" || status === "COMPLETED_PARTIAL") return GREEN;
     if (status === "FAILED") return RED;
     if (status === "CANCELLED") return GRAY;
     return BLUE;
@@ -111,7 +111,7 @@ export function PreviousReports({ onClose }: { onClose: () => void }) {
                     </td>
                     <td style={{ padding: "16px", textAlign: "right" }}>
                       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-                        {r.status === "COMPLETED" ? (
+                        {(r.status === "COMPLETED" || r.status === "COMPLETED_PARTIAL") ? (
                           <>
                             <button onClick={() => handleDownload(r.id, "pdf", r.compound_name)} title="Download PDF" style={{
                               background: "white", border: `1px solid ${BORDER}`, padding: 6, borderRadius: 6, cursor: "pointer", color: TEXT

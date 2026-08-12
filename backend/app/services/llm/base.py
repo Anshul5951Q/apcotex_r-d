@@ -10,10 +10,39 @@ from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 
-class RateLimitException(Exception):
-    def __init__(self, message: str, retry_after: float | None = None):
+class LLMException(Exception):
+    """Base class for all LLM exceptions."""
+    def __init__(self, message: str, provider: str = "", model: str = ""):
         super().__init__(message)
+        self.provider = provider
+        self.model = model
+
+class LLMAuthenticationError(LLMException):
+    """Raised for 401 Unauthorized or invalid API keys."""
+    pass
+
+class LLMModelUnavailableError(LLMException):
+    """Raised for 404 Model Not Found or model no longer available."""
+    pass
+
+class LLMRateLimitError(LLMException):
+    """Raised for 429 Rate Limit Exceeded (transient)."""
+    def __init__(self, message: str, provider: str = "", model: str = "", retry_after: float | None = None, quota_type: str = ""):
+        super().__init__(message, provider, model)
         self.retry_after = retry_after
+        self.quota_type = quota_type
+
+class LLMQuotaExhaustedError(LLMException):
+    """Raised for limit: 0 or absolute quota exhaustion (non-transient)."""
+    pass
+
+class LLMProviderUnavailableError(LLMException):
+    """Raised for 5xx server errors or timeouts from the provider."""
+    pass
+
+class LLMInvalidRequestError(LLMException):
+    """Raised for 400 Bad Request or invalid schema parameters."""
+    pass
 
 class BaseLLMProvider(ABC):
     @abstractmethod

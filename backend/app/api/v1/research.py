@@ -40,6 +40,8 @@ from app.schemas.research import (
 )
 from app.services.research_service import ResearchService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/research-runs", tags=["Research Runs"])
 
 
@@ -94,9 +96,17 @@ async def create_research_run(
     session: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> SuccessResponse[ResearchRunResponse]:
-    svc = ResearchService(session)
-    run = await svc.create_run(body, current_user)
-    return SuccessResponse(data=ResearchRunResponse.model_validate(run))
+    logger.info("[RESEARCH REQUEST] Request received")
+    try:
+        svc = ResearchService(session)
+        logger.info("[RESEARCH REQUEST] Request validation successful")
+        logger.info("[RESEARCH REQUEST] Calling ResearchService.create_run()")
+        run = await svc.create_run(body, current_user)
+        logger.info("[RESEARCH REQUEST] ResearchRun created: %s", run.id)
+        return SuccessResponse(data=ResearchRunResponse.model_validate(run))
+    except Exception as e:
+        logger.error("[RESEARCH REQUEST FAILED] Stage: API endpoint | Exception: %s | Message: %s", type(e).__name__, str(e))
+        raise
 
 
 @router.get(
@@ -224,8 +234,9 @@ async def get_report_content(
                     pass
                     
     html_text = markdown.markdown(markdown_text, extensions=["tables"])
+    structured_report = meta.structured_data if meta.structured_data else {}
     
-    return SuccessResponse(data={"html": html_text, "markdown": markdown_text, "extractions": json_data})
+    return SuccessResponse(data={"html": html_text, "markdown": markdown_text, "extractions": json_data, "structuredReport": structured_report})
 
 
 @router.get(

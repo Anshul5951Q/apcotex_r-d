@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -51,6 +51,9 @@ class ReportMetadata(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     generated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    structured_data: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True
     )
 
     # ── Relationships ─────────────────────────────────────────────────────────

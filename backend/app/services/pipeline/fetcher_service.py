@@ -42,6 +42,83 @@ class FetcherService:
             logger.error("Failed to fetch patent from %s: %s", url, e)
             return None
 
+    async def fetch_patent_metadata(self, url: str) -> Optional[dict]:
+        """
+        Lightweight fetch to extract authoritative title and basic metadata from Google Patents HTML.
+        Does not parse full text/examples.
+        """
+        logger.info("Fetching lightweight metadata from %s...", url)
+        try:
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                response = await client.get(url, timeout=15.0)
+                response.raise_for_status()
+                
+                content_type = response.headers.get("Content-Type", "")
+                if "application/pdf" in content_type.lower() or url.lower().endswith(".pdf"):
+                    return {"url": url, "google_patents_title": "", "publication_date": "", "canonical_url": url}
+                    
+                soup = BeautifulSoup(response.text, "html.parser")
+                meta_data = {"url": url, "google_patents_title": "", "publication_date": "", "canonical_url": url, "jurisdiction": "", "abstract": "", "claims": "", "cpc_ipc": [], "assignee": ""}
+                
+                dc_title = soup.find("meta", {"name": "DC.title"})
+                citation_title = soup.find("meta", {"name": "citation_title"})
+                
+                if dc_title and dc_title.get("content"):
+                    meta_data["google_patents_title"] = dc_title.get("content").strip()
+                elif citation_title and citation_title.get("content"):
+                    meta_data["google_patents_title"] = citation_title.get("content").strip()
+                else:
+                    title_tag = soup.find("title")
+                    if title_tag:
+                        raw_title = title_tag.get_text(strip=True)
+                        raw_title = re.sub(r' - Google Patents$', '', raw_title, flags=re.IGNORECASE).strip()
+                        meta_data["google_patents_title"] = raw_title
+                        
+                canonical = soup.find("link", {"rel": "canonical"})
+                if canonical and canonical.get("href"):
+                    meta_data["canonical_url"] = canonical.get("href")
+                    match = re.search(r'patents\.google\.com/patent/([A-Z]{2}\d+[A-Z\d]*)', meta_data["canonical_url"])
+                    if match:
+                        pn = match.group(1)
+                        meta_data["patent_number"] = pn
+                        meta_data["jurisdiction"] = pn[:2].upper()
+                        
+                dc_date = soup.find("meta", {"name": "DC.date"})
+                if dc_date and dc_date.get("content"):
+                    meta_data["publication_date"] = dc_date.get("content")
+                    
+                abstract_node = soup.find("section", {"itemprop": "abstract"})
+                if abstract_node:
+                    meta_data["abstract"] = abstract_node.get_text(separator="\n", strip=True)
+                    
+                claims_node = soup.find("section", {"itemprop": "claims"})
+                if claims_node:
+                    meta_data["claims"] = claims_node.get_text(separator="\n", strip=True)
+                    
+                assignee_node = soup.find("meta", {"scheme": "assignee"}) or soup.find("meta", {"name": "DC.contributor"})
+                if assignee_node and assignee_node.get("content"):
+                    meta_data["assignee"] = assignee_node.get("content")
+                    
+                cpc_nodes = soup.find_all("span", {"itemprop": "Code"})
+                for node in cpc_nodes:
+                    meta_data["cpc_ipc"].append(node.get_text(strip=True))
+                meta_data["cpc_ipc"] = list(set(meta_data["cpc_ipc"]))
+                
+                # Extract Legal Status
+                meta_data["legal_status"] = "Unknown"
+                status_node = soup.find("span", {"itemprop": "status"})
+                if status_node:
+                    meta_data["legal_status"] = status_node.get_text(strip=True)
+                else:
+                    dc_type = soup.find("meta", {"name": "DC.type"})
+                    if dc_type and dc_type.get("content"):
+                        meta_data["legal_status"] = dc_type.get("content").strip()
+                    
+                return meta_data
+        except Exception as e:
+            logger.error("Failed to fetch lightweight metadata from %s: %s", url, e)
+            return None
+
     def _parse_pdf(self, pdf_bytes: bytes) -> ParsedPatent:
         """Extract text from a PDF file using pdfplumber."""
         logger.info("Parsing PDF content...")
@@ -114,16 +191,65 @@ class FetcherService:
                 # Let's keep them in the text as plain text just in case, but they will be processed natively.
                 
             desc_text = description_node.get_text(separator="\n", strip=True)
+            parsed.detailed_description = desc_text
             
-            # Naive splitting based on common headers
-            # Find the index of "EXAMPLES" or "Example 1"
-            ex_match = re.search(r'\n(EXAMPLES?|Examples?|EXAMPLE 1)\n', desc_text, re.IGNORECASE)
-            if ex_match:
-                idx = ex_match.start()
-                parsed.detailed_description = desc_text[:idx].strip()
+            # Phase 6: Structural Evidence
+            from app.services.pipeline.schemas import StructuralEvidence
+            evidence = StructuralEvidence()
+            
+            # 1. Section Headings (Flexible detection)
+            heading_pattern = r'(?i)(example\s*\d*|preparation example|working example|experimental example|manufacturing example|polymerization example|reference example|comparative example|detailed description|best mode|mode for carrying out|embodiment|experimental|procedure|general procedure|reaction procedure|synthesis procedure|polymer preparation|production example)'
+            
+            evidence.has_preparation_example = bool(re.search(r'(?i)preparation example', desc_text))
+            evidence.has_experimental_example = bool(re.search(r'(?i)experimental example|experimental procedure', desc_text))
+            evidence.has_working_example = bool(re.search(r'(?i)working example', desc_text))
+            evidence.has_embodiment = bool(re.search(r'(?i)embodiment', desc_text))
+            evidence.has_detailed_description = bool(re.search(r'(?i)detailed description', desc_text))
+            evidence.has_claims = bool(parsed.claims)
+            
+            # 2. Extract Scientific Blocks (Examples & Procedures)
+            ex_matches = list(re.finditer(heading_pattern, desc_text))
+            evidence.example_count = len(ex_matches)
+            
+            if ex_matches:
+                idx = ex_matches[0].start()
+                # Phase 2: Scientific Block Detection. Extract from first experimental heading onwards
                 parsed.examples = desc_text[idx:].strip()
             else:
-                parsed.detailed_description = desc_text
+                parsed.examples = ""
+                
+            evidence.table_count = len(parsed.tables)
+            
+            # 3. Counters (Reaction Conditions & Generic Entities)
+            lower_text = desc_text.lower()
+            evidence.temperature_count = lower_text.count("°c") + lower_text.count("degrees c") + lower_text.count("temperature")
+            evidence.pressure_count = lower_text.count("mpa") + lower_text.count("bar") + lower_text.count("pressure")
+            evidence.initiator_count = lower_text.count("initiator") + lower_text.count("catalyst")
+            evidence.emulsifier_count = lower_text.count("emulsifier") + lower_text.count("surfactant") + lower_text.count("soap")
+            evidence.chain_transfer_count = lower_text.count("chain transfer")
+            evidence.conversion_count = lower_text.count("conversion") + lower_text.count("yield")
+            evidence.coagulation_count = lower_text.count("coagulation") + lower_text.count("flocculation")
+            evidence.wt_percent_count = lower_text.count("wt%") + lower_text.count("wt %") + lower_text.count("weight percent") + lower_text.count("mol%") + lower_text.count("mol %")
+            evidence.phr_count = lower_text.count("phr") + lower_text.count("parts by weight")
+            
+            # Dynamic Chemical/Monomer Detection
+            # CAS-like patterns (e.g. 100-42-5)
+            cas_matches = len(re.findall(r'\b\d{2,7}-\d{2}-\d\b', desc_text))
+            
+            # Capitalized potential chemicals (e.g. Butadiene, Acrylonitrile, Potassium persulfate)
+            # Simple heuristic: capitalized word followed by chemical suffixes
+            chem_matches = len(re.findall(r'\b[A-Z][a-z]+(?:ene|ide|ate|ol|amine|ane|acid)\b', desc_text))
+            
+            # 4. Densities
+            total_len = len(desc_text) + 1
+            num_count = len(re.findall(r'\d+\.?\d*', desc_text))
+            evidence.numeric_density = num_count / total_len * 1000  # Numbers per 1000 chars
+            evidence.example_density = evidence.example_count / total_len * 1000
+            
+            # Add dynamic chemical entities into the general density score or initiator score for Recipe Confidence
+            evidence.initiator_count += cas_matches + (chem_matches // 10)
+            
+            parsed.structural_evidence = evidence
                 
         else:
             # Fallback
@@ -133,4 +259,19 @@ class FetcherService:
             else:
                 parsed.detailed_description = soup.get_text(separator="\n", strip=True)
                 
+        # [DIAGNOSTIC LOGGING]
+        html_bytes = len(html.encode("utf-8"))
+        abs_len = len(parsed.abstract) if parsed.abstract else 0
+        desc_len = len(parsed.detailed_description) if parsed.detailed_description else 0
+        claims_len = len(parsed.claims) if parsed.claims else 0
+        ex_count = parsed.structural_evidence.example_count if parsed.structural_evidence else 0
+        
+        logger.info(f"[DIAGNOSTIC] FETCH: HTTP 200 | HTML bytes: {html_bytes}")
+        logger.info(f"[DIAGNOSTIC] PARSE: abstract length: {abs_len} | description length: {desc_len} | claims length: {claims_len} | examples found: {ex_count}")
+        
+        # Validation checks
+        total_text_len = abs_len + desc_len + claims_len
+        if total_text_len < 1000:
+            logger.error("Parsed text is suspiciously short (length: %d), possible parsing failure.", total_text_len)
+            
         return parsed

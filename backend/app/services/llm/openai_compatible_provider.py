@@ -10,7 +10,7 @@ import json
 from openai import AsyncOpenAI, RateLimitError
 from pydantic import ValidationError
 
-from app.services.llm.base import BaseLLMProvider, RateLimitException, T
+from app.services.llm.base import BaseLLMProvider, LLMRateLimitError, T
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
 
     def _handle_error(self, e: Exception):
         if isinstance(e, RateLimitError):
-            raise RateLimitException(f"{self.provider_name} Rate Limit Exceeded: {e}")
+            raise LLMRateLimitError(f"{self.provider_name} Rate Limit Exceeded: {e}")
         raise e
 
     async def generate_text(self, prompt: str, system_prompt: str, temperature: float = 0.2) -> str:

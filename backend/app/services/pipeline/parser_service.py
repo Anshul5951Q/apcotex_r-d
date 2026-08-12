@@ -19,12 +19,13 @@ class ParserService:
 
     def parse_tables(self, html_tables: list[Dict[str, str]]) -> str:
         """
-        Converts a list of HTML tables into a structured Markdown or JSON representation
+        Converts a list of HTML tables into a structured Markdown representation
         so the LLM can easily read it without noisy HTML tags.
         """
         parsed_tables = []
         for i, table_dict in enumerate(html_tables):
             html = table_dict.get("html", "")
+            title = table_dict.get("title", f"Table {i+1}")
             if not html:
                 continue
                 
@@ -32,20 +33,22 @@ class ParserService:
             rows = soup.find_all("tr")
             
             table_data = []
-            for row in rows:
-                cells = [cell.get_text(strip=True) for cell in row.find_all(["th", "td"])]
+            for r_idx, row in enumerate(rows):
+                cells = [cell.get_text(strip=True).replace("\n", " ").replace("|", " ") for cell in row.find_all(["th", "td"])]
                 if any(cells):  # Skip empty rows
-                    table_data.append(" | ".join(cells))
+                    table_data.append("| " + " | ".join(cells) + " |")
+                    # Add markdown header separator after first row
+                    if r_idx == 0:
+                        table_data.append("|" + "|".join(["---" for _ in cells]) + "|")
             
             if table_data:
-                parsed_tables.append(f"Table {i+1}:\n" + "\n".join(table_data))
+                parsed_tables.append(f"{title}:\n" + "\n".join(table_data))
                 
         return "\n\n".join(parsed_tables)
 
-    def detect_recipe_blocks(self, parsed: ParsedPatent) -> list[str]:
+    def detect_recipe_blocks(self, parsed: ParsedPatent) -> list['PatentExample']:
         """
-        Identify distinct recipe blocks (e.g., Example 1, Preparation Example) 
-        and slice them into isolated strings.
+        Identify distinct recipe blocks using flexible section detection.
         """
         text = ""
         if parsed.examples:
@@ -54,139 +57,118 @@ class ParserService:
             text += self.parse_tables(parsed.tables) + "\n"
             
         if not text:
-            # Fallback to detailed description if examples were not split out properly
             text = parsed.detailed_description
 
-        # Simple regex to split by typical Example headers
-        # Matches "Example 1", "Comparative Example 2", "Preparation Example", etc.
-        pattern = re.compile(r'\n((?:Comparative\s+|Preparation\s+)?(?:Example|Experiment)\s*\d*)\n', re.IGNORECASE)
+        # Flexible detection for sections as requested
+        # Example, Example 1, Experimental Example, Preparation Example, Working Example,
+        # Polymerization Example, Synthesis Example, Preparation of Polymer, Polymer Preparation,
+        # Polymerization Procedure, Synthesis Procedure, Experimental Procedure, Production Process,
+        # Manufacturing Process, Detailed Description
+        
+        headers = [
+            r"Example\s*\d*",
+            r"Experimental Example\s*\d*",
+            r"Preparation Example\s*\d*",
+            r"Working Example\s*\d*",
+            r"Polymerization Example\s*\d*",
+            r"Synthesis Example\s*\d*",
+            r"Preparation of Polymer\s*\d*",
+            r"Polymer Preparation\s*\d*",
+            r"Polymerization Procedure\s*\d*",
+            r"Synthesis Procedure\s*\d*",
+            r"Experimental Procedure\s*\d*",
+            r"Production Process\s*\d*",
+            r"Manufacturing Process\s*\d*",
+            r"Comparative Example\s*\d*",
+            r"General Procedure",
+            r"General Polymerization Procedure",
+            r"Process for Producing",
+            r"Reaction Procedure",
+            r"Preparation\s*\d*",
+            r"Polymerization\s*\d*",
+            r"Experimental",
+            r"Synthesis",
+            r"Detailed Description"
+        ]
+        
+        # Build one big regex: matches start-of-string or newline, followed by any header, optionally a colon or dash, then newline
+        pattern_str = r'(?:^|\n)(' + '|'.join(headers) + r')[\s:\-]*\n'
+        pattern = re.compile(pattern_str, re.IGNORECASE)
         
         parts = pattern.split(text)
+        from app.services.pipeline.schemas import PatentExample
         blocks = []
         
-        # parts[0] is the text before the first example. We skip it unless it's the only part.
         if len(parts) == 1:
-            # No specific example headers found, treat the whole thing as one block
-            blocks.append(parts[0].strip())
+            # No headers found, just return one big block if it's large enough
+            if len(parts[0].strip()) > 50:
+                blocks.append(PatentExample(
+                    number="1",
+                    type="GENERAL PROCEDURE",
+                    title="General Procedure",
+                    raw_text=parts[0].strip()
+                ))
         else:
-            # parts will be [pre_text, "Example 1", body_1, "Example 2", body_2, ...]
             for i in range(1, len(parts), 2):
                 header = parts[i].strip()
                 body = parts[i+1].strip() if i+1 < len(parts) else ""
-                block_text = f"--- {header.upper()} ---\n{body}"
-                blocks.append(block_text)
+                if len(body) > 50:
+                    # Extract number if present
+                    num_match = re.search(r'\d+', header)
+                    number = num_match.group(0) if num_match else ""
+                    
+                    # Determine type
+                    ex_type = "EXAMPLE"
+                    if "comparative" in header.lower():
+                        ex_type = "COMPARATIVE EXAMPLE"
+                    elif "preparation" in header.lower() or "synthesis" in header.lower():
+                        ex_type = "PREPARATION"
+                        
+                    blocks.append(PatentExample(
+                        number=number,
+                        type=ex_type,
+                        title=header.upper(),
+                        raw_text=body
+                    ))
                 
-        return [b for b in blocks if len(b) > 50]  # ignore tiny artifacts
+        return blocks
 
-    def extract_deterministic_data(self, parsed: ParsedPatent, recipe_block: str = None) -> PatentExtraction:
+    def retrieve_targeted_evidence(self, parsed: ParsedPatent, missing_keywords: list[str], max_chars: int = 10000) -> str:
         """
-        Populate the PatentExtraction nested object using deterministic rules (regex and meta tags).
-        Unfound fields remain 'Not disclosed'.
+        Targeted retrieval: searches the parsed patent for passages containing the missing keywords.
+        Returns paragraphs surrounding the match, safely under the max character limit.
         """
-        logger.info("Executing Rule-Based Extraction...")
-        
-        extraction = PatentExtraction()
-        extraction.metadata.url = parsed.url
-        
-        # 1. Metadata mapping
-        if "citation_patent_publication_number" in parsed.metadata:
-            extraction.metadata.patent_number = parsed.metadata["citation_patent_publication_number"].replace(":", "")
-        elif "citation_patent_number" in parsed.metadata:
-            extraction.metadata.patent_number = parsed.metadata["citation_patent_number"]
-        elif "DC.identifier" in parsed.metadata:
-            extraction.metadata.patent_number = parsed.metadata["DC.identifier"]
-            
-        if extraction.metadata.patent_number and extraction.metadata.patent_number != "Not disclosed":
-            extraction.metadata.jurisdiction = extraction.metadata.patent_number[:2].upper()
-            
-        if "citation_title" in parsed.metadata:
-            extraction.metadata.patent_title = parsed.metadata["citation_title"]
-        elif "DC.title" in parsed.metadata:
-            extraction.metadata.patent_title = parsed.metadata["DC.title"]
-            
-        if "citation_assignee" in parsed.metadata:
-            extraction.metadata.assignee = parsed.metadata["citation_assignee"]
-        elif "DC.contributor" in parsed.metadata:
-            extraction.metadata.assignee = parsed.metadata["DC.contributor"]
-            
-        if "citation_publication_date" in parsed.metadata:
-            date_str = parsed.metadata["citation_publication_date"]
-        elif "DC.date" in parsed.metadata:
-            date_str = parsed.metadata["DC.date"]
-        else:
-            date_str = ""
-            
-        if date_str:
-            match = re.search(r'\b(19|20)\d{2}\b', date_str)
-            if match:
-                extraction.metadata.publication_year = match.group(0)
-
-        # Naive rule based searches over the text
-        full_text = recipe_block if recipe_block else (parsed.abstract + "\n" + parsed.summary + "\n" + parsed.detailed_description + "\n" + parsed.examples)
-        
-        temp_matches = set(re.findall(r'(\d{1,3}\s*(?:°C|deg C|degrees C))', full_text, re.IGNORECASE))
-        if temp_matches:
-            extraction.reaction_conditions.temperature = ", ".join(list(temp_matches)[:5])
-            
-        time_matches = set(re.findall(r'(\d+(?:\.\d+)?\s*(?:hours|hrs|minutes|mins))', full_text, re.IGNORECASE))
-        if time_matches:
-            extraction.reaction_conditions.time = ", ".join(list(time_matches)[:5])
-            
-        conversion_matches = set(re.findall(r'(conversion.*?(\d{1,3}(?:\.\d+)?)\s*%)', full_text, re.IGNORECASE))
-        if conversion_matches:
-            extraction.reaction_conditions.conversion = ", ".join([m[0] for m in list(conversion_matches)[:5]])
-            
-        water_matches = set(re.findall(r'((?:\d+(?:\.\d+)?)\s*(?:parts|phr).*?water)', full_text, re.IGNORECASE))
-        if water_matches:
-            extraction.polymerization.water_amount = ", ".join(list(water_matches)[:5])
-            
-        acn_matches = set(re.findall(r'(acrylonitrile|ACN).*?(\d{1,3}(?:\.\d+)?)\s*(?:%|parts|phr)', full_text, re.IGNORECASE))
-        if acn_matches:
-            extraction.polymerization.monomers = "Acrylonitrile: " + ", ".join([f"{m[1]} {m[0].split()[-1]}" for m in list(acn_matches)[:5]])
-            
-        bd_matches = set(re.findall(r'(butadiene|BD).*?(\d{1,3}(?:\.\d+)?)\s*(?:%|parts|phr)', full_text, re.IGNORECASE))
-        if bd_matches:
-            bd_str = "Butadiene: " + ", ".join([f"{m[1]} {m[0].split()[-1]}" for m in list(bd_matches)[:5]])
-            if extraction.polymerization.monomers != "Not disclosed":
-                extraction.polymerization.monomers += "; " + bd_str
-            else:
-                extraction.polymerization.monomers = bd_str
-            
-        mooney_matches = set(re.findall(r'(mooney.*?(\d{1,3}(?:\.\d+)?))', full_text, re.IGNORECASE))
-        if mooney_matches:
-            extraction.properties.mooney_viscosity = ", ".join([m[1] for m in list(mooney_matches)[:3]])
-            
-        particle_size_matches = set(re.findall(r'(particle size.*?(\d{1,4}(?:\.\d+)?)\s*(?:nm|um|microns))', full_text, re.IGNORECASE))
-        if particle_size_matches:
-            extraction.properties.other_properties = "Particle Size: " + ", ".join([f"{m[1]} {m[0].split()[-1]}" for m in list(particle_size_matches)[:3]])
-                
-        tg_matches = set(re.findall(r'(Tg|glass transition).*?(-?\d{1,3}(?:\.\d+)?)\s*°C', full_text, re.IGNORECASE))
-        if tg_matches:
-            tg_str = "Tg: " + ", ".join([m[1] + "°C" for m in list(tg_matches)[:3]])
-            if extraction.properties.other_properties != "Not disclosed":
-                extraction.properties.other_properties += "; " + tg_str
-            else:
-                extraction.properties.other_properties = tg_str
-                
-        initiator_matches = set(re.findall(r'((?:potassium persulfate|KPS|ammonium persulfate|APS|initiator|catalyst).*?(?:\d+(?:\.\d+)?)\s*(?:parts|phr))', full_text, re.IGNORECASE))
-        if initiator_matches:
-            extraction.polymerization.initiator = ", ".join(list(initiator_matches)[:5])
-            
-        cta_matches = set(re.findall(r'((?:t-dodecyl mercaptan|t-DDM|chain transfer agent|CTA).*?(?:\d+(?:\.\d+)?)\s*(?:parts|phr))', full_text, re.IGNORECASE))
-        if cta_matches:
-            extraction.polymerization.chain_transfer_agent = ", ".join(list(cta_matches)[:5])
-            
-        emulsifier_matches = set(re.findall(r'((?:potassium oleate|sodium rosinate|sodium dodecylbenzenesulfonate|emulsifier|surfactant).*?(?:\d+(?:\.\d+)?)\s*(?:parts|phr))', full_text, re.IGNORECASE))
-        if emulsifier_matches:
-            extraction.polymerization.emulsifier = ", ".join(list(emulsifier_matches)[:5])
-
-        # Example tables & Claims
+        text = ""
+        if parsed.examples:
+            text += parsed.examples + "\n"
+        if parsed.detailed_description:
+            text += parsed.detailed_description + "\n"
         if parsed.tables:
-            extraction.examples.example_tables = [self.parse_tables(parsed.tables)]
+            text += self.parse_tables(parsed.tables) + "\n"
             
-        if parsed.claims:
-            claims_split = re.split(r'\n(?=\d+\.)', parsed.claims)
-            indep_claims = [c.strip() for c in claims_split if c.strip() and not re.search(r'claim \d+', c, re.IGNORECASE)]
-            extraction.claims = indep_claims[:5]
+        paragraphs = text.split('\n\n')
+        retrieved_paragraphs = []
+        retrieved_indices = set()
+        
+        for kw in missing_keywords:
+            for i, p in enumerate(paragraphs):
+                if i in retrieved_indices:
+                    continue
+                if kw.lower() in p.lower():
+                    # Get surrounding context: i-1, i, i+1
+                    start_idx = max(0, i-1)
+                    end_idx = min(len(paragraphs), i+2)
+                    
+                    for j in range(start_idx, end_idx):
+                        if j not in retrieved_indices and len(paragraphs[j].strip()) > 20:
+                            retrieved_paragraphs.append(paragraphs[j].strip())
+                            retrieved_indices.add(j)
 
-        return extraction
+        # Truncate context to stay within budget
+        context = ""
+        for p in retrieved_paragraphs:
+            if len(context) + len(p) + 2 > max_chars:
+                break
+            context += p + "\n\n"
+            
+        return context.strip()
