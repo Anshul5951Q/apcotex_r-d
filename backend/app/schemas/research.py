@@ -75,6 +75,11 @@ class ResearchRunResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None
+    
+    # Heartbeat / runtime tracking (injected at endpoint)
+    stage: str | None = None
+    progress: str | None = None
+    error: str | None = None
 
     model_config = {"from_attributes": True}
 

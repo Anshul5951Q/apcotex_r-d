@@ -25,10 +25,14 @@ class OpenAICompatibleProvider(BaseLLMProvider):
 
     def _handle_error(self, e: Exception):
         if isinstance(e, RateLimitError):
+            err_str = str(e).lower()
+            if "tokens_per_day" in err_str or "daily quota" in err_str or "budget exceeded" in err_str:
+                from app.services.llm.base import LLMQuotaExhaustedError
+                raise LLMQuotaExhaustedError(f"{self.provider_name} Daily Token Quota Exceeded: {e}")
             raise LLMRateLimitError(f"{self.provider_name} Rate Limit Exceeded: {e}")
         raise e
 
-    async def generate_text(self, prompt: str, system_prompt: str, temperature: float = 0.2) -> str:
+    async def generate_text(self, prompt: str, system_prompt: str, temperature: float = 0.2) -> tuple[str, dict]:
         try:
             response = await self.client.chat.completions.create(
                 model=self.model_name,
@@ -38,11 +42,17 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 ],
                 temperature=temperature,
             )
-            return response.choices[0].message.content
+            usage = {}
+            if hasattr(response, 'usage') and response.usage:
+                usage = {
+                    "input_tokens": getattr(response.usage, "prompt_tokens", None),
+                    "output_tokens": getattr(response.usage, "completion_tokens", None),
+                }
+            return response.choices[0].message.content, usage
         except Exception as e:
             self._handle_error(e)
 
-    async def generate_structured(self, prompt: str, system_prompt: str, schema: Type[T], temperature: float = 0.1) -> T | None:
+    async def generate_structured(self, prompt: str, system_prompt: str, schema: Type[T], temperature: float = 0.1) -> tuple[T | None, dict]:
         try:
             # We use JSON mode. To make it strictly structured, we append the schema to the system prompt
             # since not all providers support strict function calling.
@@ -60,9 +70,17 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             )
             
             content = response.choices[0].message.content
-            return schema.model_validate_json(content)
+            
+            usage = {}
+            if hasattr(response, 'usage') and response.usage:
+                usage = {
+                    "input_tokens": getattr(response.usage, "prompt_tokens", None),
+                    "output_tokens": getattr(response.usage, "completion_tokens", None),
+                }
+                
+            return schema.model_validate_json(content), usage
         except ValidationError as ve:
             logger.error("Validation error extracting structured data via %s: %s", self.provider_name, ve)
-            return None
+            return None, {}
         except Exception as e:
             self._handle_error(e)

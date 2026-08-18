@@ -10,6 +10,7 @@ import logging
 from jose import JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit_actions import AuditAction, AuditEntityType
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -18,6 +19,7 @@ from app.core.security import (
 )
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import AccessTokenResponse, LoginRequest, TokenResponse
+from app.services.audit_service import AuditService
 from app.utils.exceptions import InvalidCredentialsError, InvalidTokenError
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,7 @@ class AuthService:
 
     def __init__(self, session: AsyncSession) -> None:
         self._repo = UserRepository(session)
+        self._audit_service = AuditService(session)
 
     async def login(self, credentials: LoginRequest) -> TokenResponse:
         """
@@ -38,10 +41,26 @@ class AuthService:
 
         if user is None or not verify_password(credentials.password, user.hashed_password):
             logger.warning("Failed login attempt for username=%r", credentials.username)
+            # Log failed login attempt
+            await self._audit_service.log(
+                user_id="anonymous",
+                action=AuditAction.LOGIN_FAILED,
+                entity_type=AuditEntityType.USER,
+                entity_id=None,
+                detail={"username": credentials.username, "reason": "invalid_credentials"},
+            )
             raise InvalidCredentialsError()
 
         if not user.is_active:
             logger.warning("Login attempt on inactive account username=%r", credentials.username)
+            # Log failed login attempt for inactive account
+            await self._audit_service.log(
+                user_id=str(user.id),
+                action=AuditAction.LOGIN_FAILED,
+                entity_type=AuditEntityType.USER,
+                entity_id=str(user.id),
+                detail={"username": credentials.username, "reason": "account_disabled"},
+            )
             raise InvalidCredentialsError(message="Account is disabled. Contact an administrator.")
 
         access_token = create_access_token(
@@ -51,6 +70,16 @@ class AuthService:
         refresh_token = create_refresh_token(subject=str(user.id))
 
         logger.info("User %r logged in successfully.", user.username)
+
+        # Log successful login
+        await self._audit_service.log(
+            user_id=str(user.id),
+            action=AuditAction.LOGIN,
+            entity_type=AuditEntityType.USER,
+            entity_id=str(user.id),
+            detail={"username": user.username, "role": user.role.value},
+        )
+
         return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
     async def refresh(self, refresh_token_str: str) -> AccessTokenResponse:

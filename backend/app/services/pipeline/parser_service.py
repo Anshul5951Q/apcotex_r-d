@@ -135,40 +135,115 @@ class ParserService:
 
     def retrieve_targeted_evidence(self, parsed: ParsedPatent, missing_keywords: list[str], max_chars: int = 10000) -> str:
         """
-        Targeted retrieval: searches the parsed patent for passages containing the missing keywords.
-        Returns paragraphs surrounding the match, safely under the max character limit.
+        Targeted retrieval: ranks paragraphs by evidence value and returns the most relevant sections.
         """
-        text = ""
-        if parsed.examples:
-            text += parsed.examples + "\n"
-        if parsed.detailed_description:
-            text += parsed.detailed_description + "\n"
-        if parsed.tables:
-            text += self.parse_tables(parsed.tables) + "\n"
-            
-        paragraphs = text.split('\n\n')
-        retrieved_paragraphs = []
-        retrieved_indices = set()
+        import json
         
-        for kw in missing_keywords:
-            for i, p in enumerate(paragraphs):
-                if i in retrieved_indices:
-                    continue
-                if kw.lower() in p.lower():
-                    # Get surrounding context: i-1, i, i+1
-                    start_idx = max(0, i-1)
-                    end_idx = min(len(paragraphs), i+2)
-                    
-                    for j in range(start_idx, end_idx):
-                        if j not in retrieved_indices and len(paragraphs[j].strip()) > 20:
-                            retrieved_paragraphs.append(paragraphs[j].strip())
-                            retrieved_indices.add(j)
-
-        # Truncate context to stay within budget
-        context = ""
-        for p in retrieved_paragraphs:
-            if len(context) + len(p) + 2 > max_chars:
-                break
-            context += p + "\n\n"
+        all_text_blocks = []
+        
+        # 1. Structure the blocks
+        if parsed.abstract:
+            all_text_blocks.append(("Abstract", parsed.abstract))
+        if parsed.claims:
+            all_text_blocks.append(("Claims", parsed.claims))
             
-        return context.strip()
+        # Incorporate detected examples if they exist
+        blocks = self.detect_recipe_blocks(parsed)
+        for b_idx, b in enumerate(blocks):
+            all_text_blocks.append((b.title or f"Example {b_idx}", b.raw_text))
+            
+        for t_idx, t in enumerate(parsed.tables):
+            parsed_t = self.parse_tables([t])
+            all_text_blocks.append((f"Table {t_idx+1}", parsed_t))
+            
+        # Detailed description as fallback
+        if parsed.detailed_description:
+            all_text_blocks.append(("Detailed Description", parsed.detailed_description))
+            
+        for sec in getattr(parsed, 'structured_sections', []):
+            all_text_blocks.append((sec.name, sec.text))
+            
+        # 2. Score paragraphs
+        scored_paragraphs = []
+        
+        high_value_sections = ["example", "preparation", "synthesis", "table", "procedure", "process"]
+        
+        kw_lower_list = [kw.lower() for kw in missing_keywords]
+        
+        for section_name, text in all_text_blocks:
+            paragraphs = [p.strip() for p in text.split('\n') if len(p.strip()) > 20]
+            section_lower = section_name.lower()
+            
+            # Base section score
+            section_score = 0
+            if any(hv in section_lower for hv in high_value_sections):
+                section_score += 50
+                
+            for i, p in enumerate(paragraphs):
+                p_lower = p.lower()
+                score = section_score
+                
+                # Boost for keywords
+                kw_matches = sum(1 for kw in kw_lower_list if kw in p_lower)
+                score += (kw_matches * 20)
+                
+                # Boost for chemical/process terms
+                if "part" in p_lower or "wt%" in p_lower or "ratio" in p_lower:
+                    score += 15
+                if "temperature" in p_lower or "°c" in p_lower or "pressure" in p_lower:
+                    score += 15
+                if "initiator" in p_lower or "catalyst" in p_lower or "emulsifier" in p_lower:
+                    score += 15
+                    
+                if score > 0:
+                    scored_paragraphs.append({
+                        "section": section_name,
+                        "index": i,
+                        "text": p,
+                        "score": score,
+                        "total_paragraphs": len(paragraphs),
+                        "all_paragraphs": paragraphs
+                    })
+                    
+        # 3. Sort by score
+        scored_paragraphs.sort(key=lambda x: x["score"], reverse=True)
+        
+        # 4. Extract top paragraphs with surrounding context
+        evidence_blocks = []
+        total_chars = 0
+        added_keys = set()
+        
+        for sp in scored_paragraphs:
+            section_name = sp["section"]
+            i = sp["index"]
+            paragraphs = sp["all_paragraphs"]
+            
+            start_idx = max(0, i-1)
+            end_idx = min(len(paragraphs), i+2)
+            
+            block_text = ""
+            for j in range(start_idx, end_idx):
+                pid = f"{section_name}_{j}"
+                if pid not in added_keys:
+                    added_keys.add(pid)
+                    block_text += paragraphs[j] + "\n"
+                    
+            if block_text:
+                block_len = len(block_text)
+                if total_chars + block_len > max_chars:
+                    # Allow one partial truncation if it's the very first block, otherwise break
+                    if total_chars == 0:
+                        block_text = block_text[:max_chars]
+                    else:
+                        break
+                        
+                evidence_blocks.append({
+                    "section": section_name,
+                    "text": block_text.strip()
+                })
+                total_chars += len(block_text)
+                
+            if total_chars >= max_chars:
+                break
+                
+        return json.dumps(evidence_blocks, indent=2)

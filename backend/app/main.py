@@ -10,7 +10,16 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import auth, health, research, users, settings as settings_router
+from app.api.v1 import (
+    auth,
+    audit,
+    health,
+    research,
+    users,
+    settings as settings_router,
+    telemetry,
+    recipe,
+)
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.utils.exceptions import register_exception_handlers
@@ -23,6 +32,32 @@ def create_app() -> FastAPI:
 
     # ── Logging must be first ─────────────────────────────────────────────────
     setup_logging()
+    
+    import time
+    from fastapi import Request
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class LoggingMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            # Suppress noisy GET/OPTIONS logs for dashboard polling and CORS preflight
+            silent_paths = ["/research-runs", "/research", "/admin/usage"]
+            is_silent = (
+                request.method == "OPTIONS" or
+                (request.method == "GET" and any(p in request.url.path for p in silent_paths))
+            )
+            
+            if not is_silent:
+                logger.info("HTTP REQUEST\n------------\nMETHOD: %s\nPATH: %s\nORIGIN: %s\nCONTENT_TYPE: %s", 
+                            request.method, request.url.path, request.client.host, request.headers.get("content-type"))
+            
+            start_time = time.time()
+            response = await call_next(request)
+            process_time = time.time() - start_time
+            
+            if not is_silent:
+                logger.info("HTTP RESPONSE\n-------------\nMETHOD: %s\nPATH: %s\nSTATUS: %s\nLATENCY: %s",
+                            request.method, request.url.path, response.status_code, process_time)
+            return response
 
     app = FastAPI(
         title=settings.APP_NAME,
@@ -44,16 +79,23 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    
+    app.add_middleware(LoggingMiddleware)
 
     # ── Exception Handlers ────────────────────────────────────────────────────
     register_exception_handlers(app)
 
     # ── Routers ───────────────────────────────────────────────────────────────
+    from app.api.v1 import admin_usage
+    app.include_router(admin_usage.router, prefix="/api/v1")
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(research.router)
+    app.include_router(audit.router)
     app.include_router(settings_router.router, prefix="/api/v1/settings", tags=["Settings"])
+    app.include_router(telemetry.router, prefix="/api/v1/research", tags=["Telemetry"])
+    app.include_router(recipe.router, prefix="/api/v1")
 
     logger.info("Application startup complete — %s v%s", settings.APP_NAME, settings.APP_VERSION)
     return app

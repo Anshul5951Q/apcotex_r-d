@@ -15,6 +15,12 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Module-level task registry to prevent garbage collection
+_background_tasks = set()
+# Global reference to prevent garbage collection
+_active_task = None
+
+from app.core.audit_actions import AuditAction, AuditEntityType
 from app.models.research_run import ResearchRun, RunStatus
 from app.models.user import User, UserRole
 from app.repositories.research_repository import ResearchRepository
@@ -24,6 +30,7 @@ from app.schemas.research import (
     ResearchRunList,
     ResearchRunSummary,
 )
+from app.services.audit_service import AuditService
 from app.services.pipeline.orchestrator import PipelineOrchestrator
 from app.utils.exceptions import AppException, ForbiddenError, NotFoundError
 
@@ -35,6 +42,7 @@ class ResearchService:
 
     def __init__(self, session: AsyncSession) -> None:
         self._repo = ResearchRepository(session)
+        self._audit_service = AuditService(session)
 
     # ── Cache key ─────────────────────────────────────────────────────────────
 
@@ -105,13 +113,46 @@ class ResearchService:
             await self._repo._session.commit()
             logger.info("[RESEARCH REQUEST] Transaction committed")
 
+            # Log research creation
+            await self._audit_service.log(
+                user_id=str(current_user.id),
+                action=AuditAction.RESEARCH_CREATED,
+                entity_type=AuditEntityType.RESEARCH_RUN,
+                entity_id=str(run.id),
+                detail={
+                    "compound": data.compound_name,
+                    "competitors": data.competitors or [],
+                    "websites": data.mentioned_websites or [],
+                    "jurisdictions": data.publication_filter or {},
+                },
+            )
+
             # Spawn background pipeline
             logger.info("[RESEARCH REQUEST] Creating PipelineOrchestrator")
             orchestrator = PipelineOrchestrator(run.id)
             logger.info("[RESEARCH REQUEST] PipelineOrchestrator created")
             logger.info("[RESEARCH REQUEST] Starting pipeline execution")
-            asyncio.create_task(orchestrator.execute())
-            logger.info("[RESEARCH REQUEST] Pipeline task created")
+            
+            # Use asyncio.ensure_future to run the pipeline in the background
+            # Keep a strong reference to prevent garbage collection
+            global _active_task
+            _active_task = asyncio.ensure_future(orchestrator.execute())
+            logger.info("[RESEARCH REQUEST] Pipeline task created: %s", _active_task)
+            
+            # Add error handler for the background task
+            def task_done_callback(t):
+                try:
+                    result = t.result()
+                    logger.info("[RESEARCH REQUEST] Pipeline task completed successfully")
+                except Exception as e:
+                    logger.error("[RESEARCH REQUEST] Pipeline task failed: %s", e)
+                finally:
+                    # Clear global reference when done
+                    global _active_task
+                    if _active_task == t:
+                        _active_task = None
+            
+            _active_task.add_done_callback(task_done_callback)
 
             return run
         except Exception as e:
@@ -164,6 +205,35 @@ class ResearchService:
 
         if run is None:
             raise NotFoundError(resource="ResearchRun")
+
+        # Stale run detection using Heartbeat
+        from datetime import datetime, timezone, timedelta
+        from app.models.research_run import RunStatus
+        from app.core.telemetry import ACTIVE_RUNS_HEARTBEAT
+        
+        # Inject heartbeat data if available
+        hb = ACTIVE_RUNS_HEARTBEAT.get(str(run.id), {})
+        run.stage = hb.get("stage")
+        run.progress = hb.get("progress")
+        run.error = hb.get("error")
+        
+        if run.status in RunStatus.active_states():
+            last_hb = hb.get("last_heartbeat")
+            # If no heartbeat within 30 minutes, or no heartbeat ever but updated_at is > 30 mins old
+            stale_threshold = timedelta(minutes=30)
+            now = datetime.now(timezone.utc)
+            
+            is_stale = False
+            if last_hb and (now - last_hb) > stale_threshold:
+                is_stale = True
+            elif not last_hb and run.updated_at and (now - run.updated_at) > stale_threshold:
+                is_stale = True
+                
+            if is_stale:
+                logger.warning(f"Run {run.id} detected as stale (heartbeat missing for >30 mins). Marking as FAILED.")
+                run.status = RunStatus.FAILED
+                run.error = "Run timed out or background worker crashed."
+                await self._session.commit()
 
         return run
 

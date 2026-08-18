@@ -63,7 +63,7 @@ class SearchResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     website_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     
     gemini_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    gemini_decision: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    gemini_decision: Mapped[str | None] = mapped_column(String(50), nullable=True)
     gemini_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     
     selection_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)

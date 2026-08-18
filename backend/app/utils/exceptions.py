@@ -8,10 +8,12 @@ Register handlers by calling register_exception_handlers(app).
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+import logging
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.schemas.common import ErrorDetail, ErrorResponse
 
+logger = logging.getLogger(__name__)
 
 # ── Domain Exceptions ─────────────────────────────────────────────────────────
 
@@ -120,6 +122,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def database_exception_handler(
         request: Request, exc: SQLAlchemyError
     ) -> JSONResponse:
+        logger.error("Database exception: ", exc_info=exc)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=_error_response(
@@ -132,6 +135,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def unhandled_exception_handler(
         request: Request, exc: Exception
     ) -> JSONResponse:
+        logger.error("Unhandled exception: ", exc_info=exc)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content=_error_response(

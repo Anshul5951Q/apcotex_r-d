@@ -10,6 +10,7 @@ import {
   Trash2,
   Edit2,
   CheckCircle2,
+  X,
 } from "lucide-react";
 // Removed PatentResearchReport import
 import type { PatentRecipeStep } from "./recipeSimulatorPatentData";
@@ -39,6 +40,8 @@ import {
 import { LowAcnPatentReportViewer } from "./LowAcnPatentReportViewer";
 import { useProperties } from "../../contexts/PropertyContext";
 import { CustomerFeedbackProvider, useCustomerFeedbackProperties } from "../../contexts/CustomerFeedbackContext";
+import { usePatentResearch } from "../../contexts/PatentResearchContext";
+import { useRecipe } from "../../contexts/RecipeContext";
 
 const BLUE = "#1F5FA8";
 const TEAL = "#1FB7B5";
@@ -691,51 +694,28 @@ function PolymerizationRecipeCard({
 export function Step1TargetSpec({
   onBack,
   onContinue,
-  transferredData,
-  patentResearchReport,
 }: {
   onBack: () => void;
-  onContinue: (data: TransferredSpecData) => void;
-  transferredData?: TransferredSpecData | null;
-  patentResearchReport?: any | null;
+  onContinue: () => void;
 }) {
+  const { state: researchState } = usePatentResearch();
+  const { createCycle, generateRecipes } = useRecipe();
+  const patentResearchReport = researchState.recipeData;
   const { properties, addProperty, updateProperty, deleteProperty } = useProperties();
   const [showPatentReport, setShowPatentReport] = useState(false);
   const patentColumns = getPatentColumns(patentResearchReport);
   const [desired, setDesired] = useState<
     Record<string, { min: string; max: string }>
-  >(() => {
-    if (!transferredData?.targetPolymerProperties) return {};
-    return Object.fromEntries(
-      transferredData.targetPolymerProperties.map((item) => [
-        item.feature,
-        item.range,
-      ]),
-    );
-  });
+  >({});
+  const [competitors, setCompetitors] = useState<{ id: string; name: string }[]>([
+    { id: 'c1', name: '' },
+  ]);
   const [competitorValues, setCompetitorValues] = useState<
-    Record<string, { basf: string; syn: string; tri: string }>
-  >(() =>
-    transferredData?.competitorData
-      ? Object.fromEntries(
-        transferredData.competitorData.map((item) => [
-          item.feature,
-          { basf: item.basf, syn: item.syn, tri: item.tri },
-        ]),
-      )
-      : buildInitialCompetitorValues(properties),
-  );
+    Record<string, Record<string, string>>
+  >({});
   const patentValues = useMemo(() => {
-    if (transferredData?.patentResearchData) {
-      return Object.fromEntries(
-        transferredData.patentResearchData.map((item) => [
-          item.feature,
-          item.values,
-        ]),
-      );
-    }
     return buildPatentColumnValues(patentResearchReport, properties);
-  }, [patentResearchReport, transferredData, properties]);
+  }, [patentResearchReport, properties]);
   const [running, setRunning] = useState(false);
   const [showPatentRecipes, setShowPatentRecipes] = useState<
     Record<string, boolean>
@@ -750,33 +730,38 @@ export function Step1TargetSpec({
   });
 
   useEffect(() => {
-    if (transferredData) return;
-    setCompetitorValues(buildInitialCompetitorValues(properties));
-  }, [patentResearchReport, transferredData, properties]);
+    // Initial load logic here if needed
+  }, [patentResearchReport, properties]);
 
-  const handleRun = () => {
+  const handleRun = async () => {
     setRunning(true);
-    setTimeout(() => {
-      setRunning(false);
-      onContinue({
-        competitorData: properties.map((row) => ({
-          feature: row.feature,
-          unit: row.unit,
-          basf: competitorValues[row.feature]?.basf ?? row.basf,
-          syn: competitorValues[row.feature]?.syn ?? row.syn,
-          tri: competitorValues[row.feature]?.tri ?? row.tri,
-        })),
-        patentResearchData: properties.map((row) => ({
-          feature: row.feature,
-          values: patentValues[row.feature] ?? {},
-        })),
-        targetPolymerProperties: properties.map((row) => ({
-          feature: row.feature,
-          unit: row.unit,
-          range: desired[row.feature] || { min: "", max: "" },
-        })),
+    try {
+      const formattedCompetitorData = competitors.map(c => {
+        const vals: Record<string, string> = {};
+        properties.forEach(p => {
+          if (competitorValues[p.feature]?.[c.id]) {
+            vals[p.feature] = competitorValues[p.feature][c.id];
+          }
+        });
+        return {
+          name: c.name || "Unknown Competitor",
+          values: vals
+        };
       });
-    }, 1800);
+
+      const cycleId = await createCycle({
+        research_run_id: researchState.researchRunId || null,
+        compound_name: researchState.compoundName || "Unknown Product",
+        target_specs: desired,
+        competitor_data: formattedCompetitorData,
+      });
+      await generateRecipes(); // Wait for generation
+      onContinue();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setRunning(false);
+    }
   };
 
   const readOnlyCell = {
@@ -829,18 +814,18 @@ export function Step1TargetSpec({
           <table
             style={{
               width: "100%",
+              minWidth: "1000px",
               borderCollapse: "collapse",
-              minWidth: 1100,
               tableLayout: "fixed",
             }}
           >
             <colgroup>
-              <col style={{ width: "340px" }} />
-              <col style={{ width: "95px" }} />
-              <col style={{ width: "95px" }} />
-              <col style={{ width: "95px" }} />
-              <col style={{ width: "320px" }} />
-              <col style={{ width: "auto", minWidth: "220px" }} />
+              <col style={{ width: "28%", minWidth: "300px" }} />
+              {competitors.map((c) => (
+                <col key={c.id} style={{ width: `${28 / Math.max(1, competitors.length)}%`, minWidth: "120px" }} />
+              ))}
+              <col style={{ width: "24%", minWidth: "280px" }} />
+              <col style={{ width: "20%", minWidth: "220px" }} />
             </colgroup>
             <thead>
               <tr>
@@ -852,7 +837,7 @@ export function Step1TargetSpec({
                   }}
                 />
                 <th
-                  colSpan={3}
+                  colSpan={competitors.length}
                   style={{
                     padding: "9px 12px",
                     fontSize: "0.75rem",
@@ -925,9 +910,87 @@ export function Step1TargetSpec({
                 <th style={{ ...headerCell, textAlign: "left" }}>
                   Property
                 </th>
-                <th style={headerCell}>BASF</th>
-                <th style={headerCell}>Synthomer</th>
-                <th style={headerCell}>Trinseo</th>
+                {competitors.map((c, idx) => (
+                  <th key={c.id} style={{ ...headerCell, padding: "4px 8px" }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <input
+                        type="text"
+                        value={c.name}
+                        onChange={(e) => setCompetitors(prev => prev.map((p, i) => i === idx ? { ...p, name: e.target.value } : p))}
+                        placeholder="Company Name"
+                        style={{
+                          width: '100%',
+                          border: '1px solid transparent',
+                          background: 'transparent',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          color: BLUE,
+                          textAlign: 'center',
+                          outline: 'none',
+                        }}
+                        onFocus={(e) => { e.target.style.background = 'white'; e.target.style.border = `1px solid ${BORDER}`; }}
+                        onBlur={(e) => { e.target.style.background = 'transparent'; e.target.style.border = '1px solid transparent'; }}
+                      />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        {competitors.length > 1 && (
+                          <button
+                            onClick={() => {
+                              if (confirm("Are you sure you want to remove this company?")) {
+                                setCompetitors(prev => prev.filter((_, i) => i !== idx));
+                                // Cleanup values
+                                setCompetitorValues(prev => {
+                                  const next = { ...prev };
+                                  Object.keys(next).forEach(prop => {
+                                    if (next[prop]?.[c.id]) {
+                                      const newPropVals = { ...next[prop] };
+                                      delete newPropVals[c.id];
+                                      next[prop] = newPropVals;
+                                    }
+                                  });
+                                  return next;
+                                });
+                              }
+                            }}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: '#EF4444',
+                              cursor: 'pointer',
+                              padding: '2px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              opacity: 0.7,
+                            }}
+                            onMouseOver={(e) => e.currentTarget.style.opacity = '1'}
+                            onMouseOut={(e) => e.currentTarget.style.opacity = '0.7'}
+                            title="Remove Company"
+                          >
+                            <X size={12} strokeWidth={3} />
+                          </button>
+                        )}
+                        {idx === competitors.length - 1 && (
+                          <button
+                            onClick={() => setCompetitors(prev => [...prev, { id: `c${Date.now()}`, name: '' }])}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: TEAL,
+                              cursor: 'pointer',
+                              padding: '2px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center'
+                            }}
+                            title="Add Company"
+                          >
+                            <Plus size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </th>
+                ))}
                 {/* patentColumns removed */}
                 <th
                   style={{
@@ -1021,25 +1084,17 @@ export function Step1TargetSpec({
                       )}
                     </div>
                   </td>
-                  {(
-                    [
-                      { key: "basf" as const, fallback: row.basf },
-                      { key: "syn" as const, fallback: row.syn },
-                      { key: "tri" as const, fallback: row.tri },
-                    ] as const
-                  ).map(({ key, fallback }) => (
-                    <td key={key} style={readOnlyCell}>
+                  {competitors.map((comp) => (
+                    <td key={comp.id} style={readOnlyCell}>
                       <input
                         type="text"
-                        value={competitorValues[row.feature]?.[key] ?? fallback}
+                        value={competitorValues[row.feature]?.[comp.id] || ""}
                         onChange={(e) =>
                           setCompetitorValues((prev) => ({
                             ...prev,
                             [row.feature]: {
-                              basf: prev[row.feature]?.basf ?? row.basf,
-                              syn: prev[row.feature]?.syn ?? row.syn,
-                              tri: prev[row.feature]?.tri ?? row.tri,
-                              [key]: e.target.value,
+                              ...(prev[row.feature] || {}),
+                              [comp.id]: e.target.value,
                             },
                           }))
                         }
@@ -1171,8 +1226,8 @@ export function Step1TargetSpec({
                       </div>
                     </div>
                   </td>
-                  {['basf', 'syn', 'tri'].map(() => (
-                    <td key={Math.random()} style={readOnlyCell}>
+                  {competitors.map((comp) => (
+                    <td key={comp.id} style={readOnlyCell}>
                       <input
                         type="text"
                         placeholder=""
@@ -1257,7 +1312,7 @@ export function Step1TargetSpec({
               {!showAddProperty && (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={competitors.length + 3}
                     style={{
                       borderTop: `1px solid ${BORDER}`,
                       padding: '12px',
@@ -1287,11 +1342,7 @@ export function Step1TargetSpec({
                   </td>
                 </tr>
               )}
-              <tr>
-                <td colSpan={4} style={{ borderTop: `1px solid ${BORDER}` }} />
-                <td style={{ borderTop: `1px solid ${BORDER}`, borderRight: `1px solid ${BORDER}` }} />
-                <td style={{ borderTop: `1px solid ${BORDER}` }} />
-              </tr>
+
             </tfoot>
           </table>
         </div>
@@ -1374,24 +1425,79 @@ export function Step1TargetSpec({
 export function Step2PolymerizationRecommendations({
   onBack,
   onContinue,
-  selectedRecipeId,
-  onSelectRecipe,
-  recipes,
-  onUpdateProperty,
-  onAddProperty,
-  onDeleteProperty,
-  onResetRecipe,
 }: {
   onBack: () => void;
   onContinue: () => void;
-  selectedRecipeId: string;
-  onSelectRecipe: (id: string) => void;
-  recipes: EditableRecipe[];
-  onUpdateProperty: (recipeId: string, propertyId: string, updates: Partial<RecipeProperty>) => void;
-  onAddProperty: (recipeId: string, property: RecipeProperty) => void;
-  onDeleteProperty: (recipeId: string, propertyId: string) => void;
-  onResetRecipe: (recipeId: string) => void;
 }) {
+  const { candidates, selectCandidate, selectedCandidate } = useRecipe();
+  const [editingRecipes, setEditingRecipes] = useState<EditableRecipe[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (candidates && candidates.length > 0) {
+      setEditingRecipes(candidates.map(convertToEditableRecipe));
+    }
+  }, [candidates]);
+
+  const handleSelect = async (id: string) => {
+    setSubmitting(true);
+    try {
+      await selectCandidate(id);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const onUpdateProperty = (recipeId: string, propertyId: string, updates: Partial<RecipeProperty>) => {
+    setEditingRecipes((prev) =>
+      prev.map((r) =>
+        r.id === recipeId
+          ? {
+              ...r,
+              properties: r.properties.map((p) =>
+                p.id === propertyId ? { ...p, ...updates } : p
+              ),
+            }
+          : r
+      )
+    );
+  };
+
+  const onAddProperty = (recipeId: string, property: RecipeProperty) => {
+    setEditingRecipes((prev) =>
+      prev.map((r) =>
+        r.id === recipeId
+          ? { ...r, properties: [...r.properties, property] }
+          : r
+      )
+    );
+  };
+
+  const onDeleteProperty = (recipeId: string, propertyId: string) => {
+    setEditingRecipes((prev) =>
+      prev.map((r) =>
+        r.id === recipeId
+          ? {
+              ...r,
+              properties: r.properties.filter((p) => p.id !== propertyId),
+            }
+          : r
+      )
+    );
+  };
+
+  const onResetRecipe = (recipeId: string) => {
+    const original = candidates.find(c => c.id === recipeId);
+    if (original) {
+      setEditingRecipes((prev) =>
+        prev.map((r) =>
+          r.id === recipeId ? convertToEditableRecipe(original) : r
+        )
+      );
+    }
+  };
   return (
     <div>
       <div
@@ -1432,18 +1538,24 @@ export function Step2PolymerizationRecommendations({
           marginBottom: 24,
         }}
       >
-        {recipes.map((recipe) => (
-          <PolymerizationRecipeCard
-            key={recipe.id}
-            recipe={recipe}
-            selected={selectedRecipeId === recipe.id}
-            onSelect={() => onSelectRecipe(recipe.id)}
-            onUpdateProperty={onUpdateProperty}
-            onAddProperty={onAddProperty}
-            onDeleteProperty={onDeleteProperty}
-            onResetRecipe={onResetRecipe}
-          />
-        ))}
+        {editingRecipes.length === 0 ? (
+          <div style={{ padding: 24, textAlign: 'center', width: '100%', color: '#6B7280' }}>
+            No recipes generated yet.
+          </div>
+        ) : (
+          editingRecipes.map((recipe) => (
+            <PolymerizationRecipeCard
+              key={recipe.id}
+              recipe={recipe}
+              selected={selectedCandidate?.id === recipe.id}
+              onSelect={() => handleSelect(recipe.id)}
+              onUpdateProperty={onUpdateProperty}
+              onAddProperty={onAddProperty}
+              onDeleteProperty={onDeleteProperty}
+              onResetRecipe={onResetRecipe}
+            />
+          ))
+        )}
       </div>
 
       <div
@@ -1472,22 +1584,22 @@ export function Step2PolymerizationRecommendations({
         </button>
         <button
           onClick={onContinue}
-          disabled={!selectedRecipeId}
+          disabled={!selectedCandidate || submitting}
           style={{
-            background: selectedRecipeId ? TEAL : "#D1D5DB",
+            background: selectedCandidate ? TEAL : "#D1D5DB",
             color: "white",
             border: "none",
             borderRadius: 7,
             padding: "11px 22px",
             fontSize: "0.875rem",
             fontWeight: 700,
-            cursor: selectedRecipeId ? "pointer" : "not-allowed",
+            cursor: selectedCandidate ? "pointer" : "not-allowed",
             display: "flex",
             alignItems: "center",
             gap: 8,
           }}
         >
-          Continue to Customer Trial Feedback
+          {submitting ? "Selecting..." : "Continue to Customer Trial Feedback"}
           <ChevronRight size={16} />
         </button>
       </div>
@@ -1498,21 +1610,15 @@ export function Step2PolymerizationRecommendations({
 export function Step3CustomerTrialFeedback({
   onBack,
   onOptimize,
-  selectedRecipeName,
-  transferredData,
 }: {
   onBack: () => void;
   onOptimize: () => void;
-  selectedRecipeName: string;
-  transferredData?: TransferredSpecData | null;
 }) {
   return (
     <CustomerFeedbackProvider initialProperties={CUSTOMER_FEEDBACK_PROPERTIES}>
       <Step3CustomerTrialFeedbackContent
         onBack={onBack}
         onOptimize={onOptimize}
-        selectedRecipeName={selectedRecipeName}
-        transferredData={transferredData}
       />
     </CustomerFeedbackProvider>
   );
@@ -1521,24 +1627,17 @@ export function Step3CustomerTrialFeedback({
 function Step3CustomerTrialFeedbackContent({
   onBack,
   onOptimize,
-  selectedRecipeName,
-  transferredData,
 }: {
   onBack: () => void;
   onOptimize: () => void;
-  selectedRecipeName: string;
-  transferredData?: TransferredSpecData | null;
 }) {
-  const {
-    customerFeedbackProperties,
-    addCustomerFeedbackProperty,
-    updateCustomerFeedbackProperty,
-    deleteCustomerFeedbackProperty
-  } = useCustomerFeedbackProperties();
-  const [optimizing, setOptimizing] = useState(false);
+  const { customerFeedbackProperties, addCustomerFeedbackProperty, updateCustomerFeedbackProperty, deleteCustomerFeedbackProperty } = useCustomerFeedbackProperties();
+  const { createTrial, selectedCandidate } = useRecipe();
+  
+  const selectedRecipeName = selectedCandidate?.name || "Selected Recipe";
   const [measuredValues, setMeasuredValues] = useState<Record<string, string>>({});
-  const [targetValues, setTargetValues] = useState<Record<string, string>>(CUSTOMER_FEEDBACK_TARGET_VALUES);
-  const [customerNotes, setCustomerNotes] = useState(DEMO_CUSTOMER_NOTES);
+  const [targetValues, setTargetValues] = useState<Record<string, string>>({});
+  const [notes, setNotes] = useState("");
   const [showAddProperty, setShowAddProperty] = useState(false);
   const [editingProperty, setEditingProperty] = useState<string | null>(null);
   const [newProperty, setNewProperty] = useState({
@@ -1547,13 +1646,21 @@ function Step3CustomerTrialFeedbackContent({
     category: '',
     dataType: 'number' as 'number' | 'text' | 'boolean',
   });
+  const [running, setRunning] = useState(false);
 
-  const handleOptimize = () => {
-    setOptimizing(true);
-    setTimeout(() => {
-      setOptimizing(false);
+  const handleOptimize = async () => {
+    setRunning(true);
+    try {
+      await createTrial({
+        measured_values: measuredValues,
+        feedback: notes,
+      });
       onOptimize();
-    }, 1500);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setRunning(false);
+    }
   };
 
   return (
@@ -1610,8 +1717,8 @@ function Step3CustomerTrialFeedbackContent({
             Customer Feedback
           </div>
           <textarea
-            value={customerNotes}
-            onChange={(e) => setCustomerNotes(e.target.value)}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
             style={{
               width: "100%",
               padding: "12px",
@@ -2070,12 +2177,13 @@ function Step3CustomerTrialFeedbackContent({
   );
 }
 
-function OptimizedRecipeCard({ recipe }: { recipe: OptimizedRecipe }) {
+function OptimizedRecipeCard({ recipe, selected, onSelect }: { recipe: any; selected: boolean; onSelect: () => void }) {
   const [showRecipe, setShowRecipe] = useState(false);
-  const baseRecipe = POLYMERIZATION_RECIPES.find((item) => item.id === "recipe-2");
+  const { selectedCandidate } = useRecipe();
+  const baseRecipe = selectedCandidate?.recipe_data;
 
   return (
-    <div style={{ ...card, padding: "18px", marginBottom: 16 }}>
+    <div style={{ ...card, padding: "18px", marginBottom: 16, border: selected ? `2px solid ${TEAL}` : `1px solid ${BORDER}` }}>
       <div
         style={{
           display: "flex",
@@ -2084,21 +2192,39 @@ function OptimizedRecipeCard({ recipe }: { recipe: OptimizedRecipe }) {
           marginBottom: 14,
         }}
       >
-        <h4 style={{ margin: 0, color: BLUE, fontSize: "0.9375rem" }}>
+        <h4 style={{ margin: 0, color: BLUE, fontSize: "0.9375rem", display: 'flex', alignItems: 'center', gap: 8 }}>
           {recipe.name}
+          {selected && <CheckCircle2 size={16} color={TEAL} />}
         </h4>
-        <span
-          style={{
-            background: "rgba(31,183,181,0.12)",
-            color: TEAL,
-            fontWeight: 700,
-            fontSize: "0.8125rem",
-            padding: "3px 10px",
-            borderRadius: 20,
-          }}
-        >
-          Confidence: {recipe.confidence}%
-        </span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <span
+            style={{
+              background: "rgba(31,183,181,0.12)",
+              color: TEAL,
+              fontWeight: 700,
+              fontSize: "0.8125rem",
+              padding: "3px 10px",
+              borderRadius: 20,
+            }}
+          >
+            Match: {recipe.evidence_coverage_score}%
+          </span>
+          <button
+            onClick={onSelect}
+            style={{
+              background: selected ? 'white' : TEAL,
+              color: selected ? TEAL : 'white',
+              border: selected ? `1px solid ${TEAL}` : 'none',
+              borderRadius: 20,
+              padding: '3px 12px',
+              fontSize: '0.8125rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+            }}
+          >
+            {selected ? 'Selected' : 'Select'}
+          </button>
+        </div>
       </div>
 
       <div style={{ marginBottom: 14 }}>
@@ -2133,7 +2259,7 @@ function OptimizedRecipeCard({ recipe }: { recipe: OptimizedRecipe }) {
             </tr>
           </thead>
           <tbody>
-            {recipe.changes.map((change) => (
+            {(recipe.optimization_details?.changes || []).map((change: any) => (
               <tr key={change.parameter}>
                 <td style={{ padding: "8px 10px", border: `1px solid ${BORDER}` }}>
                   {change.parameter}
@@ -2175,9 +2301,9 @@ function OptimizedRecipeCard({ recipe }: { recipe: OptimizedRecipe }) {
             gap: 8,
           }}
         >
-          {recipe.impacts.map((impact) => (
+          {(recipe.optimization_details?.impacts || []).map((impact: any) => (
             <div
-              key={impact.label}
+              key={impact.property}
               style={{
                 padding: "8px 10px",
                 background: BG,
@@ -2186,7 +2312,7 @@ function OptimizedRecipeCard({ recipe }: { recipe: OptimizedRecipe }) {
                 fontSize: "0.8125rem",
               }}
             >
-              <strong>{impact.label}:</strong> {impact.value}
+              <strong>{impact.property}:</strong> {impact.expected_change}
             </div>
           ))}
         </div>
@@ -2209,34 +2335,18 @@ function OptimizedRecipeCard({ recipe }: { recipe: OptimizedRecipe }) {
       </button>
 
       {showRecipe && baseRecipe && (
-        <RecipeDetailTable
-          title={`${recipe.name} - Optimized Polymerization Recipe`}
-          steps={getPolymerizationRecipeSteps({
-            ...baseRecipe,
-            chainTransferAgent: recipe.changes.find(
-              (change) => change.parameter === "Chain Transfer Agent",
-            )?.revised ?? baseRecipe.chainTransferAgent,
-            temperature:
-              recipe.changes.find(
-                (change) => change.parameter === "Polymerization Temp",
-              )?.revised ?? baseRecipe.temperature,
-            initiator:
-              recipe.changes.find((change) => change.parameter === "Initiator")
-                ?.revised ?? baseRecipe.initiator,
-            bdAcnRatio:
-              recipe.changes.find((change) => change.parameter === "BD/ACN Ratio")
-                ?.revised ?? baseRecipe.bdAcnRatio,
-            water:
-              recipe.changes.find((change) => change.parameter === "Water")
-                ?.revised ?? baseRecipe.water,
-          })}
-        />
-      )}
+          <RecipeDetailTable
+            title={`${recipe.name} - Optimized Polymerization Recipe`}
+            steps={getPolymerizationRecipeSteps(recipe.recipe_data)}
+          />
+        )}
     </div>
   );
 }
 
 export function Step4OptimizedRecipes({ onBack }: { onBack: () => void }) {
+  const { optimizedCandidates, selectOptimized, selectedOptimized, trial } = useRecipe();
+  
   return (
     <div>
       <div
@@ -2264,13 +2374,24 @@ export function Step4OptimizedRecipes({ onBack }: { onBack: () => void }) {
             margin: 0,
           }}
         >
-          Revised recipes generated from customer trial feedback for Recipe 2
+          Revised recipes generated from customer trial feedback for the selected recipe.
         </p>
       </div>
 
-      {OPTIMIZED_RECIPES.map((recipe) => (
-        <OptimizedRecipeCard key={recipe.id} recipe={recipe} />
-      ))}
+      {optimizedCandidates.length === 0 ? (
+        <div style={{ padding: 24, textAlign: 'center', width: '100%', color: '#6B7280' }}>
+          No optimized recipes generated yet.
+        </div>
+      ) : (
+        optimizedCandidates.map((recipe) => (
+          <OptimizedRecipeCard 
+            key={recipe.id} 
+            recipe={recipe} 
+            selected={selectedOptimized?.id === recipe.id}
+            onSelect={() => selectOptimized(recipe.id)}
+          />
+        ))
+      )}
 
       <div style={{ display: "flex", justifyContent: "flex-start" }}>
         <button

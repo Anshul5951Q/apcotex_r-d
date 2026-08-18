@@ -1,7 +1,6 @@
 import type { PatentResearchReport } from "../../contexts/PatentResearchContext";
-import {
-  DEMO_PATENT_VALUES,
-  type SpecRowTemplate,
+import type {
+  SpecRowTemplate,
 } from "./recipeSimulatorDemoData";
 
 export const PATENT_SOURCE_COLUMN_MAP: Record<
@@ -53,8 +52,8 @@ export function buildPatentColumnValues(
         result[row.feature][key] = prop ? prop.value : "N/A";
       });
     } else {
-       // Mock fallback
-       result[row.feature] = { ...(DEMO_PATENT_VALUES[row.feature] ?? {}) };
+       // No data fallback
+       result[row.feature] = {};
     }
   }
 

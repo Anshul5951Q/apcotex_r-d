@@ -21,21 +21,35 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     
     # ── Patent Pipeline ──────────────────────────────────────────────────────
+    PRIMARY_PATENT_TARGET: int = 15
     TARGET_PATENTS: int = 15
-    MIN_REQUIRED_PATENTS: int = 5
-    MAX_SEARCH_RESULTS: int = 100
-    MAX_SEARCH_PAGES_PER_QUERY: int = 3
-    TOP_LLM_CANDIDATES: int = 30
+    MIN_REQUIRED_PATENTS: int = 15
     MAX_FINAL_PATENTS: int = 15
+    MAX_SEARCH_RESULTS: int = 10
+    MAX_SEARCH_PAGES_PER_QUERY: int = 3
+    TOP_LLM_CANDIDATES: int = 15
     MAX_PATENT_DOWNLOADS: int = 15
     SEARCH_CACHE_TTL_DAYS: int = 30
     SEARCH_CACHE_VERSION: int = 1
     BYPASS_SEARCH_CACHE: bool = False
     
     # ── Budgets & Circuit Breakers ──
-    MAX_EXTRACTION_INPUT_TOKENS: int = 5000
-    GLOBAL_TOKEN_BUDGET: int = 30000
-    PRIMARY_LLM: str = "groq"
+    MAX_EXTRACTION_INPUT_TOKENS: int = 50000
+    PROVIDER_SAFE_LIMIT: int = 9000            # Per-call limit for extraction LLM calls
+    # Report generation limits
+    # The report LLM (Gemini/GPT-4o) supports up to 100K+ input tokens.
+    # We use 100K as a safe working limit; evidence budget 88K leaves ~12K for
+    # system prompt + schema + patent manifest + safety margin.
+    REPORT_PROVIDER_SAFE_LIMIT: int = 100000   # Max total report prompt (provider input limit)
+    REPORT_SAFE_EVIDENCE_BUDGET: int = 88000   # Max evidence tokens (excl. overhead)
+    REPORT_EVIDENCE_OVERHEAD_TOKENS: int = 4000  # Reserved for sys prompt + template + manifest
+    # Hard token limit for a single patent extraction LLM call (no longer used but kept for compat)
+    MAX_EXTRACTION_LLM_TOKENS: int = 8000
+    # How many deterministic params to include in the slim initial_json sent to LLM
+    MAX_EXTRACTION_DET_PARAMS_IN_PROMPT: int = 20
+    GLOBAL_TOKEN_BUDGET: int = 100000
+
+    PRIMARY_LLM: str = "openai"
     FALLBACK_LLM: str = "groq"
     ENABLE_FALLBACK: bool = True
     MAX_EXTRACTION_CALLS: int = 15
@@ -55,7 +69,7 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-3.5-flash"
     SERPER_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o-mini"
+    OPENAI_MODEL: str = "gpt-5.4-mini"
     GROK_API_KEY: str = ""
     CLAUDE_API_KEY: str = ""
     DEEPSEEK_API_KEY: str = ""

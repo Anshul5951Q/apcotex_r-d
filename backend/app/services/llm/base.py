@@ -37,18 +37,22 @@ class LLMQuotaExhaustedError(LLMException):
     pass
 
 class LLMProviderUnavailableError(LLMException):
-    """Raised for 5xx server errors or timeouts from the provider."""
+    """Raised when the provider's API is completely unavailable or throws 5xx errors."""
     pass
 
 class LLMInvalidRequestError(LLMException):
-    """Raised for 400 Bad Request or invalid schema parameters."""
+    """Raised when the request itself was invalid (400 Bad Request)."""
+    pass
+
+class LLMInvalidResponseError(LLMException):
+    """Raised when the LLM returns an empty or malformed response that cannot be parsed."""
     pass
 
 class BaseLLMProvider(ABC):
     @abstractmethod
-    async def generate_text(self, prompt: str, system_prompt: str, temperature: float = 0.2) -> str:
+    async def generate_text(self, prompt: str, system_prompt: str, temperature: float = 0.2) -> tuple[str, dict]:
         pass
 
     @abstractmethod
-    async def generate_structured(self, prompt: str, system_prompt: str, schema: Type[T], temperature: float = 0.1) -> T | None:
+    async def generate_structured(self, prompt: str, system_prompt: str, schema: Type[T], temperature: float = 0.1) -> tuple[T | None, dict]:
         pass

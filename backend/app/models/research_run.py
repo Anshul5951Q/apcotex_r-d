@@ -22,6 +22,7 @@ from app.models.base import TimestampMixin, UUIDPrimaryKeyMixin
 if TYPE_CHECKING:
     from app.models.report_metadata import ReportMetadata
     from app.models.user import User
+    from app.models.recipe_cycle import RecipeCycle
 
 
 class RunStatus(str, Enum):
@@ -34,13 +35,14 @@ class RunStatus(str, Enum):
     COMPLETED = "COMPLETED"
     COMPLETED_PARTIAL = "COMPLETED_PARTIAL"
     FAILED = "FAILED"
+    LLM_PROVIDER_EXHAUSTED = "LLM_PROVIDER_EXHAUSTED"
     CANCELLED = "CANCELLED"
     PAUSED = "PAUSED"
 
     # Convenience helpers
     @classmethod
     def terminal_states(cls) -> set["RunStatus"]:
-        return {cls.COMPLETED, cls.FAILED, cls.CANCELLED}
+        return {cls.COMPLETED, cls.COMPLETED_PARTIAL, cls.FAILED, cls.CANCELLED, cls.LLM_PROVIDER_EXHAUSTED}
 
     @classmethod
     def active_states(cls) -> set["RunStatus"]:
@@ -116,6 +118,12 @@ class ResearchRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     reports: Mapped[list["ReportMetadata"]] = relationship(
         "ReportMetadata",
+        back_populates="research_run",
+        lazy="select",
+        cascade="all, delete-orphan",
+    )
+    recipe_cycles: Mapped[list["RecipeCycle"]] = relationship(
+        "RecipeCycle",
         back_populates="research_run",
         lazy="select",
         cascade="all, delete-orphan",

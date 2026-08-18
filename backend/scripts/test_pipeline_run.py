@@ -1,6 +1,12 @@
 import asyncio
 import os
 import sys
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s:%(name)s:%(message)s'
+)
 
 # Ensure backend is in path
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -22,8 +28,9 @@ async def main():
             await session.execute(text("INSERT INTO users (id, email, hashed_password, is_active) VALUES (:id, :email, :pw, true)"), {"id": user_id, "email": "test@apcotex.com", "pw": "fake"})
             await session.commit()
             
+        compound = sys.argv[1] if len(sys.argv) > 1 else "Low Acrylonitrile NBR"
         run = ResearchRun(
-            compound_name="Low Acrylonitrile NBR",
+            compound_name=compound,
             created_by=user_id,
             status=RunStatus.PENDING,
             jurisdictions=["US", "EP"]

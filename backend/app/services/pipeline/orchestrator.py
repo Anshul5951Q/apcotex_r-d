@@ -13,10 +13,12 @@ import uuid
 from datetime import datetime, timezone
 import time
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit_actions import AuditAction, AuditEntityType
 from app.core.config import settings
+from app.core.telemetry import set_current_run_id, set_current_stage, TelemetryStage
 from app.db.session import AsyncSessionLocal
 from app.models.research_run import ResearchRun, RunStatus
 from app.models.search_query import SearchQueryModel, SearchQueryStatus
@@ -34,9 +36,10 @@ from app.services.pipeline.validation_service import ValidationService
 from app.services.pipeline.report_evidence_service import ReportEvidenceService
 from app.services.pipeline.report_service import ReportService
 from app.services.pipeline.compound_intelligence import CompoundIntelligenceService
-from app.services.pipeline.title_scorer import TitleScorer, TitleScreeningStatus
+from app.services.pipeline.title_scorer import TitleScorer, TitleScreeningStatus, TIER_ACCEPT, TIER_GENERIC_VERIFY, TIER_REJECTED
 from app.services.pipeline.schemas import CompoundSearchProfile, ParsedPatent, ExtractionStatus
 from app.repositories.patent_document_repository import PatentDocumentRepository
+from app.services.audit_service import AuditService
 from app.services.llm.llm_client import llm_client, ProviderExhaustedException
 
 logger = logging.getLogger(__name__)
@@ -84,16 +87,66 @@ class PipelineOrchestrator:
             run.updated_at = datetime.now(timezone.utc)
             await session.commit()
             logger.info("Run %s transitioned to %s", self.run_id, status.name)
+
+            # Log research lifecycle events (non-blocking)
+            try:
+                audit_service = AuditService(session)
+                if status == RunStatus.SEARCHING:
+                    # Research actually starts when we begin searching
+                    await audit_service.log(
+                        user_id=str(run.created_by),
+                        action=AuditAction.RESEARCH_STARTED,
+                        entity_type=AuditEntityType.RESEARCH_RUN,
+                        entity_id=str(run.id),
+                        detail={"compound": run.compound_name},
+                    )
+                elif status == RunStatus.COMPLETED:
+                    await audit_service.log(
+                        user_id=str(run.created_by),
+                        action=AuditAction.RESEARCH_COMPLETED,
+                        entity_type=AuditEntityType.RESEARCH_RUN,
+                        entity_id=str(run.id),
+                        detail={"compound": run.compound_name, "status": "COMPLETED"},
+                    )
+            except Exception as e:
+                # Audit logging failures must not break the research pipeline
+                logger.exception("Failed to log audit event for status %s", status.name)
         except Exception as e:
             await session.rollback()
             logger.error("Failed to update status to %s for run %s: %s", status.name, self.run_id, e)
             raise e
 
+    async def safe_update_run_status(self, session: AsyncSession, run: ResearchRun, status: RunStatus):
+        try:
+            await self._update_status(session, run, status)
+        except Exception as e:
+            logger.error("Primary status update to %s failed: %s", status.name, e)
+            if status != RunStatus.FAILED:
+                logger.info("Attempting fallback status update to FAILED")
+                try:
+                    await self._update_status(session, run, RunStatus.FAILED)
+                except Exception as fallback_e:
+                    logger.critical("CRITICAL: Fallback status update to FAILED also failed! Run %s is stuck. Error: %s", self.run_id, fallback_e)
+
     async def _mark_failed(self, session: AsyncSession, run: ResearchRun, error_msg: str):
         logger.error("Run %s FAILED: %s", self.run_id, error_msg)
         # Rollback any existing failed transaction before attempting to update status
         await session.rollback()
-        await self._update_status(session, run, RunStatus.FAILED)
+        await self.safe_update_run_status(session, run, RunStatus.FAILED)
+
+        # Log research failure (non-blocking)
+        try:
+            audit_service = AuditService(session)
+            await audit_service.log(
+                user_id=str(run.created_by),
+                action=AuditAction.RESEARCH_FAILED,
+                entity_type=AuditEntityType.RESEARCH_RUN,
+                entity_id=str(run.id),
+                detail={"compound": run.compound_name, "error": error_msg[:500]},  # Truncate long errors
+            )
+        except Exception as e:
+            # Audit logging failures must not break the research pipeline
+            logger.exception("Failed to log research failure audit event")
 
     def _generate_deterministic_fallback_report(self, extractions: list, profile: CompoundSearchProfile) -> str:
         rep = f"# Technical Patent Research Report: {profile.compound_name}\n\n"
@@ -118,6 +171,21 @@ class PipelineOrchestrator:
 
             try:
                 extractions_by_patent = {}
+                # --- MOCK TESTING BLOCKS (TEST B, C, D) ---
+                if run.compound_name == "Test B":
+                    raise ProviderExhaustedException("Mock Gemini quota exhausted")
+                if run.compound_name == "Test C":
+                    raise Exception("Mock generic exception")
+                if run.compound_name == "Test D":
+                    await self._update_status(session, run, RunStatus.COMPLETED)
+                    logger.info("Mock Test D completed.")
+                    return
+                # --- END MOCK TESTING BLOCKS ---
+                
+                from app.services.llm.llm_client import llm_client
+                llm_client.reset_health()
+                
+                extractions_by_patent = {}
                 allowed_authorities = run.jurisdictions if run.jurisdictions else ["US", "EP"]
                 date_start = run.publication_filter.get("year_from", "") if run.publication_filter else ""
                 if date_start: date_start = f"{date_start}0101"
@@ -125,36 +193,40 @@ class PipelineOrchestrator:
                 if date_end: date_end = f"{date_end}1231"
 
                 # ── Step 1: Profile Loading
+                set_current_run_id(self.run_id)
+                set_current_stage(TelemetryStage.QUERY_EXPANSION)
                 profile = await self.compound_intelligence.generate_profile(run.compound_name)
                 title_scorer = TitleScorer(profile)
                 
                 await self._update_status(session, run, RunStatus.SEARCHING)
                 
                 # ── QUERY EXPANSION LOGGING
-                logger.info("=" * 60)
+                from app.models.api_usage_log import APIUsageLog
+                try:
+                    usage_res = await session.execute(
+                        select(
+                            func.sum(APIUsageLog.total_tokens).label("total_tokens"),
+                            func.sum(APIUsageLog.input_tokens).label("input_tokens"),
+                            func.sum(APIUsageLog.output_tokens).label("output_tokens")
+                        ).where(APIUsageLog.research_run_id == self.run_id)
+                    )
+                    usage_row = usage_res.first()
+                    qe_in = usage_row.input_tokens or 0
+                    qe_out = usage_row.output_tokens or 0
+                    qe_tot = usage_row.total_tokens or 0
+                except:
+                    qe_in, qe_out, qe_tot = 0, 0, 0
+
+                logger.info("")
+                logger.info("============================================================")
                 logger.info("QUERY EXPANSION")
-                logger.info("=" * 60)
-                logger.info(f"Original User Input: {profile.original_input}")
-                logger.info(f"Normalized Material: {profile.compound_name}")
-                logger.info(f"Important Constraints: {profile.important_constraints if profile.important_constraints else 'None'}")
-                logger.info(f"Research Intent: {profile.research_intent if profile.research_intent else 'Not specified'}")
-                logger.info(f"Synonyms: {profile.synonyms[:5] if profile.synonyms else 'None'}")
-                logger.info("")
-                logger.info("Generated Queries:")
-                for idx, sq in enumerate(profile.search_queries, 1):
-                    priority_str = sq.priority.value if hasattr(sq.priority, 'value') else str(sq.priority)
-                    logger.info(f"Query {idx}")
-                    logger.info(f"  Priority: {priority_str}")
-                    logger.info(f"  Category: {sq.category}")
-                    logger.info(f"  Field: {sq.field}")
-                    logger.info(f"  Query: {sq.query}")
-                logger.info(f"Total Queries Generated: {len(profile.search_queries)}")
-                logger.info("=" * 60)
-                logger.info("QUERY EXPANSION COMPLETE")
-                logger.info("=" * 60)
-                logger.info("")
+                logger.info(f"- Input tokens: {qe_in}")
+                logger.info(f"- Output tokens: {qe_out}")
+                logger.info(f"- Total tokens: {qe_tot}")
+                logger.info("============================================================")
                 
                 # ── Step 2: Build Queries & Pagination Search
+                set_current_stage(TelemetryStage.PATENT_SEARCH)
                 raw_queries = self.search_service.build_queries(profile)
                 
                 # ── DISCOVERY CONFIGURATION LOGGING
@@ -165,7 +237,7 @@ class PipelineOrchestrator:
                 logger.info(f"Base Compound: {profile.compound_name}")
                 logger.info(f"Competitors: {', '.join(run.competitors) if run.competitors else 'None'}")
                 logger.info(f"External Websites: {', '.join(run.mentioned_websites) if run.mentioned_websites else 'None'}")
-                logger.info(f"Jurisdictions: {', '.join(run.jurisdictions) if run.jurisdictions else 'None'}")
+                logger.info(f"Jurisdictions: {', '.join(run.jurisdictions) if run.jurisdictions else 'ALL (Unrestricted)'}")
                 
                 # Publication date filter
                 pub_filter = run.publication_filter
@@ -209,10 +281,13 @@ class PipelineOrchestrator:
                 for idx, q in enumerate(constraint_queries, 1):
                     logger.info(f"  {idx}. {q.query} (field: {q.field.name})")
                 logger.info("")
-                global_pool = {} # Family ID -> best SearchResult
-                target_families = settings.TARGET_PATENTS  # Target: 15 relevant patent families
+                global_pool = {} # Family ID -> best ACCEPTED SearchResult
+                target_families = settings.PRIMARY_PATENT_TARGET
+                final_keep_patents = []
+                validated_publication_numbers = set()
+                
                 # Global Diagnostic Accumulators
-                total_queries_attempted = len(raw_queries)
+                total_queries_attempted = 0
                 total_queries_successful = 0
                 total_queries_failed = 0
                 total_queries_zero_results = 0
@@ -228,81 +303,63 @@ class PipelineOrchestrator:
                 total_date_rejected = 0
                 total_titles_accepted = 0
                 total_titles_rejected = 0
-                total_hnbr_excluded = 0
                 total_non_polymerization_rejected = 0
-                total_duplicates_removed = 0
-                total_downstream_rejected = 0
+                total_exact_duplicates = 0
+                total_family_duplicates = 0
+                total_family_unique = 0
+                global_pool = {}
+                global_pool_raw = {}
+                family_seen = set()
+                competitor_pool = {}
                 failed_queries = []
+                all_evaluated_candidates = []
+                rejection_reason_counts = {}  # Compact rejection reason histogram
+                # Main Search (Global Pool Collection)
+                search_exhausted = False
+                llm_provider_exhausted = False
                 serper_credits_exhausted = False
-                queries_skipped_due_to_credits = 0
-                target_reached = False
+                
+                logger.info("============================================================")
+                logger.info("DETERMINISTIC DISCOVERY (PHASE 2)")
+                logger.info("============================================================")
+                logger.info(f"Target FINAL KEEP primary candidates: {target_families}")
+                
+                max_pages = settings.MAX_SEARCH_PAGES_PER_QUERY
                 
                 for idx, q_dict in enumerate(raw_queries):
-                    # Check if we've reached target families
-                    if len(global_pool) >= target_families:
-                        target_reached = True
-                        logger.info(f"Target reached: {len(global_pool)} relevant families found (target: {target_families})")
-                        logger.info("Stopping search early - sufficient candidates collected")
+                    if serper_credits_exhausted or search_exhausted:
                         break
-                    
-                    # Check if Serper credits were exhausted in previous query
-                    if serper_credits_exhausted:
-                        queries_skipped_due_to_credits += 1
-                        logger.info(f"Skipping query {idx+1}/{len(raw_queries)} due to Serper credit exhaustion")
-                        continue
-                    
-                    # Diagnostic logging for each query
-                    logger.info(f"Query {idx+1}/{len(raw_queries)}")
-                    logger.info(f"  Expanded Query: {q_dict['query']}")
-                    logger.info(f"  Category: {q_dict['tier']}")
-                    logger.info(f"  Priority: {q_dict['priority']}")
-                    logger.info(f"  Search Field: {q_dict['search_field']}")
-                    
-                    # Validate query before attempting
-                    is_valid, validation_reason = self.search_service.validate_query(q_dict["query"], q_dict["search_field"])
-                    if not is_valid:
-                        total_queries_failed += 1
-                        failed_queries.append({
-                            "query": q_dict["query"],
-                            "field": q_dict["search_field"],
-                            "reason": f"Query validation failed: {validation_reason}"
-                        })
-                        logger.warning(f"Query validation failed: {q_dict['query']} - {validation_reason}")
-                        continue
-                    
-                    # Create DB Query record
-                    sq_model = SearchQueryModel(
-                        research_run_id=self.run_id,
-                        query_text=q_dict["query"],
-                        field=q_dict.get("search_field", q_dict.get("field", "TITLE")),
-                        category=q_dict["tier"],
-                        jurisdiction=",".join(allowed_authorities),
-                        date_start=date_start,
-                        date_end=date_end,
-                        status=SearchQueryStatus.SEARCHING
-                    )
-                    session.add(sq_model)
-                    # Diagnostic Counters
-                    diag_raw_results = 0
-                    diag_titles_extracted = 0
-                    diag_titles_missing = 0
-                    diag_titles_screened = 0
-                    diag_titles_accepted = 0
-                    diag_titles_rejected = 0
-                    diag_jurisdiction_rejected = 0
-                    diag_date_rejected = 0
-                    diag_hnbr_excluded = 0
-                    diag_non_polymerization_rejected = 0
-
-                    await session.flush()
-                    
-                    page = 1
-                    max_pages = settings.MAX_SEARCH_PAGES_PER_QUERY
-                    query_valid_results = 0
-                    query_successful = False
-                    
-                    while page <= max_pages:
+                        
+                    for page in range(1, max_pages + 1):
+                        if serper_credits_exhausted:
+                            break
+                        logger.info(f"\n--- STARTING DISCOVERY QUERY {q_dict['query']} (PAGE {page}) ---")
+                        
+                        if page == 1:
+                            is_valid, validation_reason = self.search_service.validate_query(q_dict["query"], q_dict["search_field"])
+                            if not is_valid:
+                                total_queries_failed += 1
+                                continue
+                            
+                            sq_model = SearchQueryModel(
+                                research_run_id=self.run_id,
+                                query_text=q_dict["query"],
+                                field=q_dict.get("search_field", q_dict.get("field", "TITLE")),
+                                category=q_dict["tier"],
+                                jurisdiction=",".join(allowed_authorities),
+                                date_start=date_start,
+                                date_end=date_end,
+                                status=SearchQueryStatus.SEARCHING
+                            )
+                            session.add(sq_model)
+                            await session.flush()
+                            if not hasattr(self, '_sq_models'): self._sq_models = {}
+                            self._sq_models[idx] = sq_model
+                            total_queries_attempted += 1
+                        
+                        sq_model = getattr(self, '_sq_models', {}).get(idx)
                         total_pages_attempted += 1
+                        
                         try:
                             page_results, page_success = await self.search_service.search_patents_page(
                                 query_str=q_dict["query"],
@@ -315,97 +372,146 @@ class PipelineOrchestrator:
                         except SerperCreditsExhaustedError:
                             logger.error("SERPER_CREDITS_EXHAUSTED: Stopping remaining discovery queries")
                             serper_credits_exhausted = True
-                            total_queries_failed += 1
-                            failed_queries.append({
-                                "query": q_dict["query"],
-                                "field": q_dict["search_field"],
-                                "reason": "Serper API credits exhausted"
-                            })
-                            break
-                        
+                            if page == 1: total_queries_failed += 1
+                            continue
+
+                        # Implement 1-retry fallback for 400 errors / failures on page 1
+                        if not page_success and page == 1:
+                            logger.warning(f"Query failed on page 1: '{q_dict['query']}'. Sanitizing and retrying once.")
+                            import re as regex
+                            sanitized_query = regex.sub(r'[^a-zA-Z0-9\s]', ' ', q_dict["query"])
+                            sanitized_query = regex.sub(r'\s+', ' ', sanitized_query).strip()
+                            
+                            # IMPORTANT: Update the query so subsequent pages use the sanitized version
+                            q_dict["query"] = sanitized_query
+                            if sq_model:
+                                sq_model.query_text = sanitized_query
+                                session.add(sq_model)
+                                await session.flush()
+                            
+                            try:
+                                page_results, page_success = await self.search_service.search_patents_page(
+                                    query_str=sanitized_query,
+                                    field=q_dict["search_field"],
+                                    page=page,
+                                    jurisdictions=allowed_authorities,
+                                    date_start=date_start,
+                                    date_end=date_end
+                                )
+                            except SerperCreditsExhaustedError:
+                                logger.error("SERPER_CREDITS_EXHAUSTED: Stopping remaining discovery queries")
+                                serper_credits_exhausted = True
+                                total_queries_failed += 1
+                                continue
+                            
                         if page_success:
                             total_pages_successful += 1
-                            query_successful = True
-                            logger.info(f"  Page {page} successful")
+                            if sq_model and page == 1:
+                                total_queries_successful += 1
+                                sq_model.status = SearchQueryStatus.COMPLETED
                         else:
                             total_pages_failed += 1
-                            logger.warning(f"  Page {page} failed")
-                            # If the first page fails, the entire query fails
-                            if page == 1:
-                                total_queries_failed += 1
-                                failed_queries.append({
-                                    "query": q_dict["query"],
-                                    "field": q_dict["search_field"],
-                                    "reason": "Serper API failure on first page"
-                                })
-                                break
-                            # If a subsequent page fails, stop pagination but keep results from previous pages
+                            if page == 1: total_queries_failed += 1
                             break
-                        
+                            
                         if not page_results:
-                            # Empty results page - stop pagination
-                            if page == 1:
-                                total_queries_zero_results += 1
                             break
                             
-                        diag_raw_results += len(page_results)
-                            
-                        page_strong = 0
+                        total_raw_results += len(page_results)
+                        import re as regex
+                        
                         for res in page_results:
-                            if not res.get("title"):
-                                diag_titles_missing += 1
-                                continue
-                            diag_titles_extracted += 1
+                            if search_exhausted:
+                                break
                             
-                            # Python Jurisdiction Filter
+                            if not res.get("title"):
+                                continue
+                            total_titles_extracted += 1
+                            
+                            # Jurisdiction Filter
                             if allowed_authorities and res["jurisdiction"] not in [j.upper() for j in allowed_authorities]:
-                                diag_jurisdiction_rejected += 1
+                                total_jurisdiction_rejected += 1
                                 continue
                                 
-                            # Python Date Filter
+                            # Date Filter
                             if date_start or date_end:
                                 pub_date = res.get("publication_date", "").replace("-", "")
                                 if pub_date:
-                                    # Serper might return YYYY-MM-DD, convert to YYYYMMDD
                                     if date_start and pub_date < date_start:
-                                        diag_date_rejected += 1
+                                        total_date_rejected += 1
                                         continue
                                     if date_end and pub_date > date_end:
-                                        diag_date_rejected += 1
+                                        total_date_rejected += 1
                                         continue
-                                        
-                            diag_titles_screened += 1
                             
-                            score, status, signals = title_scorer.score_title(res["title"])
+                            # Exact Deduplication
+                            pn = res["patent_number"]
+                            if pn in global_pool_raw:
+                                total_exact_duplicates += 1
+                                continue
+                            global_pool_raw[pn] = True
                             
-                            # Track HNBR exclusions
-                            if signals.get("exclusion_reason") == "HNBR/hydrogenated patent excluded":
-                                diag_hnbr_excluded += 1
-                            
-                            # Track downstream application rejections
-                            if signals.get("exclusion_reason") == "Downstream application patent excluded":
-                                total_downstream_rejected += 1
-                            
-                            # Track non-polymerization rejections (weak/reject without polymerization signals)
-                            if status in [TitleScreeningStatus.WEAK, TitleScreeningStatus.REJECT]:
-                                if not signals.get("production_method_phrase") and not signals.get("production_process_term"):
-                                    diag_non_polymerization_rejected += 1
-                            
-                            if status in [TitleScreeningStatus.STRONG, TitleScreeningStatus.MEDIUM]:
-                                diag_titles_accepted += 1
+                            # Family Deduplication
+                            family_id = regex.sub(r'[A-Za-z]\d?$', '', pn)
+                            is_duplicate = family_id in family_seen
+                            if is_duplicate:
+                                total_family_duplicates += 1
                             else:
-                                diag_titles_rejected += 1
-                                
-                            if len(global_pool) < 20:
-                                logger.info(f"TITLE SCREENING -> Title: {res['title']} | Target Match: {signals.get('target_match', False)} | Production Intent: {signals.get('production_method_phrase', False) or signals.get('production_process_term', False)} | Score: {score} | Decision: {status.name} | Intent: {signals.get('intent_classification', 'UNKNOWN')}")
+                                family_seen.add(family_id)
+                                total_family_unique += 1
+                            # Candidate Relevance Filter (Strict Two-Stage Title Screen)
+                            score, tier, signals = title_scorer.score_candidate_tiered(
+                                title=res.get("title", ""),
+                                snippet=res.get("snippet", ""),
+                                source_query=q_dict.get("query", "")
+                            )
+                            # Backward-compat status for DB storage
+                            _, status, _ = title_scorer.score_candidate(
+                                title=res.get("title", ""),
+                                snippet=res.get("snippet", ""),
+                                source_query=q_dict.get("query", "")
+                            )
 
-                            if status in [TitleScreeningStatus.STRONG, TitleScreeningStatus.MEDIUM]:
-                                page_strong += 1
-                                query_valid_results += 1
-                                
+                            # ── STRUCTURED PATENT TITLE SCREEN LOG ──────────────
+                            logger.info("\nPATENT TITLE SCREEN")
+                            logger.info(f"Patent: {res.get('patent_number')}")
+                            logger.info(f"Title: {res.get('title')}")
+                            logger.info(f"Target Material: {signals.get('matched_material') or 'NO MATCH'}")
+                            logger.info(f"Synthesis Terms: {signals.get('matched_synthesis') or 'NO MATCH'}")
+                            logger.info(f"Downstream Subject: {signals.get('matched_downstream') or 'NOT DETECTED'}")
+                            logger.info(f"Exclusion Match: {signals.get('matched_exclusion') or 'NONE'}")
+                            logger.info(f"Direct Synthesis Candidate: {'YES' if tier == TIER_ACCEPT else ('PENDING VERIFY' if tier == TIER_GENERIC_VERIFY else 'NO')}")
+                            logger.info(f"Decision: {tier}")
+                            if tier == TIER_ACCEPT:
+                                reason_str = signals.get('rejection_reason') or 'ACCEPT — direct target polymer synthesis'
+                            elif tier == TIER_GENERIC_VERIFY:
+                                reason_str = signals.get('rejection_reason') or 'GENERIC_VERIFY — target evidence + synthesis requires content check'
+                            else:
+                                reason_str = signals.get('rejection_reason') or 'REJECTED'
+                            logger.info(f"Reason: {reason_str}")
+                            logger.info("-" * 60)
+
+                            all_evaluated_candidates.append({
+                                'patent_number': res['patent_number'],
+                                'title': res['title'],
+                                'score': score,
+                                'tier': tier,
+                                'status': status.name,
+                                'rejection_reason': signals.get('rejection_reason', ''),
+                                'signals': signals,
+                            })
+
+                            if tier == TIER_REJECTED:
+                                total_titles_rejected += 1
+                                reason_code = signals.get("rejection_reason", "UNKNOWN")
+                                rejection_reason_counts[reason_code] = rejection_reason_counts.get(reason_code, 0) + 1
+                                continue
+
+                            total_titles_accepted += 1
+                            
                             db_res = SearchResult(
                                 research_run_id=self.run_id,
-                                search_query_id=sq_model.id,
+                                search_query_id=sq_model.id if sq_model else None,
                                 page_number=page,
                                 position=res["position"],
                                 title=res["title"],
@@ -419,629 +525,365 @@ class PipelineOrchestrator:
                                 title_screening_status=status,
                                 discovered_by_queries=[q_dict["query"]]
                             )
+                            # Tag whether this is a GENERIC_VERIFY candidate
+                            db_res._title_tier = tier  # transient attr for content-verify pass
                             session.add(db_res)
-                            
-                            # Keep track in global pool for deduplication later
-                            if status in [TitleScreeningStatus.STRONG, TitleScreeningStatus.MEDIUM]:
-                                family_id = re.sub(r'[A-Za-z]\d?$', '', res["patent_number"])
-                                if family_id not in global_pool:
-                                    global_pool[family_id] = db_res
-                                else:
-                                    existing = global_pool[family_id]
+
+                            # Route to primary pool only
+                            target_pool = global_pool
+
+                            if is_duplicate:
+                                existing = target_pool.get(family_id)
+                                if existing:
                                     queries = existing.discovered_by_queries or []
                                     if q_dict["query"] not in queries:
                                         queries.append(q_dict["query"])
-                                        
                                     if (existing.title_score or 0) < score:
                                         db_res.discovered_by_queries = queries
-                                        global_pool[family_id] = db_res
+                                        target_pool[family_id] = db_res
                                     else:
                                         existing.discovered_by_queries = list(queries)
-                                
+                                else:
+                                    target_pool[family_id] = db_res
+                            else:
+                                target_pool[family_id] = db_res
                         await session.flush()
                         
-                        # Check if we've reached target families after this page
-                        if len(global_pool) >= target_families:
-                            target_reached = True
-                            logger.info(f"Target reached: {len(global_pool)} relevant families found (target: {target_families})")
-                            logger.info(f"Stopping pagination for query {idx+1} - sufficient candidates collected")
-                            break
-                        
-                        page += 1
-                        
-                    # Update query-level counters
-                    if query_successful:
-                        total_queries_successful += 1
-                        sq_model.status = SearchQueryStatus.COMPLETED
-                    else:
-                        sq_model.status = SearchQueryStatus.FAILED
-                    
-                    sq_model.page_count = page - 1
-                    sq_model.result_count = query_valid_results
-                    await session.commit()
-                    
-                    
-                    # Accumulate for final report
-                    total_raw_results += diag_raw_results
-                    total_titles_extracted += diag_titles_extracted
-                    total_titles_missing += diag_titles_missing
-                    total_jurisdiction_rejected += diag_jurisdiction_rejected
-                    total_jurisdiction_accepted += (diag_raw_results - diag_titles_missing - diag_jurisdiction_rejected)
-                    total_date_rejected += diag_date_rejected
-                    total_date_accepted += (diag_raw_results - diag_titles_missing - diag_jurisdiction_rejected - diag_date_rejected)
-                    total_titles_accepted += diag_titles_accepted
-                    total_titles_rejected += diag_titles_rejected
-                    total_hnbr_excluded += diag_hnbr_excluded
-                    total_non_polymerization_rejected += diag_non_polymerization_rejected
-                    
-                    logger.info(f"Query {idx+1}/{len(raw_queries)} | Page {page-1} | Raw results: {diag_raw_results} | Titles extracted: {diag_titles_extracted} | Titles accepted: {diag_titles_accepted}")
-                
-                total_duplicates_removed = total_titles_accepted - len(global_pool)
-                
-                logger.info("================ DISCOVERY SUMMARY ================")
-                logger.info(f"User input: {profile.original_input}")
-                logger.info(f"Canonical compound: {profile.compound_name}")
-                logger.info(f"Important constraints: {profile.important_constraints}")
-                logger.info(f"")
-                logger.info(f"Queries generated: {len(profile.search_queries)}")
-                logger.info(f"Queries executed: {total_queries_successful}/{total_queries_attempted}")
-                logger.info(f"Queries failed: {total_queries_failed}")
-                logger.info(f"Queries with zero results: {total_queries_zero_results}")
-                if serper_credits_exhausted:
-                    logger.info(f"Queries skipped due to credit exhaustion: {queries_skipped_due_to_credits}")
-                    logger.info(f"Serper credit status: EXHAUSTED")
-                logger.info(f"")
-                logger.info(f"Pages attempted: {total_pages_attempted}")
-                logger.info(f"Pages successful: {total_pages_successful}")
-                logger.info(f"Pages failed: {total_pages_failed}")
-                logger.info(f"Raw Serper results: {total_raw_results}")
-                logger.info(f"")
-                logger.info(f"Jurisdiction candidates: {total_jurisdiction_accepted}")
-                logger.info(f"Jurisdiction rejected: {total_jurisdiction_rejected}")
-                logger.info(f"Date accepted: {total_date_accepted}")
-                logger.info(f"Date rejected: {total_date_rejected}")
-                logger.info(f"")
-                logger.info(f"Title candidates: {total_titles_accepted}")
-                logger.info(f"Rejected as downstream applications: {total_downstream_rejected}")
-                logger.info(f"Rejected as non-polymerization: {total_non_polymerization_rejected}")
-                logger.info(f"Rejected as HNBR: {total_hnbr_excluded}")
-                logger.info(f"Duplicates removed: {total_duplicates_removed}")
-                logger.info(f"")
-                logger.info(f"Unique relevant polymerization families: {len(global_pool)}")
-                logger.info(f"Target: {target_families}")
-                logger.info(f"Target reached: {'YES' if target_reached else 'NO'}")
-                logger.info(f"")
-                logger.info(f"Continue searching if: unique relevant families < {target_families}")
-                logger.info("=======================================================")
-                
-                if failed_queries:
-                    logger.info("Failed queries:")
-                    for i, fq in enumerate(failed_queries, 1):
-                        logger.info(f"{i}. {fq['query']} (field: {fq['field']}) - {fq['reason']}")
-                
-                logger.info("=======================================================")
-
-                # Check if discovery failed due to Serper credit exhaustion
-                if serper_credits_exhausted:
-                    logger.error("DISCOVERY_FAILED_SERPER: Serper API credits exhausted. No further patent discovery requests were attempted.")
-                    raise Exception("DISCOVERY_FAILED_SERPER: Serper API credits exhausted. No further patent discovery requests were attempted.")
-                
-                # Check if discovery failed due to other Serper API issues
-                if total_queries_successful == 0:
-                    logger.error("DISCOVERY_FAILED_SERPER: No successful Serper queries")
-                    raise Exception("DISCOVERY_FAILED_SERPER: All Serper API requests failed. Check API credits/quotas.")
-                
-                if not global_pool:
-                    logger.error("NO_CANDIDATES_AFTER_SCREENING: 0 candidates found after screening")
-                    logger.error(f"Queries successful: {total_queries_successful}")
-                    logger.error(f"Raw results received: {total_raw_results}")
-                    logger.error("Possible reasons: Title extraction failed, all titles failed relevance, jurisdiction removed all, or date filter removed all.")
-                    raise Exception("NO_CANDIDATES_AFTER_SCREENING: No candidate patents found during title screening. See logs for diagnostics.")
-                    
-                logger.info(f"================ PATENT DISCOVERY SUMMARY ================")
-                logger.info(f"Queries executed: {len(raw_queries)}")
-                logger.info(f"Unique candidate families found: {len(global_pool)}")
-                
-                # Check if target was reached
-                if not target_reached and len(global_pool) < target_families:
-                    logger.warning(f"TARGET NOT REACHED: Found {len(global_pool)} families (target: {target_families})")
-                    logger.warning("Proceeding with available candidates. Consider expanding search strategies.")
-                    logger.warning("Search strategies exhausted: All generated queries executed.")
-                
-                # Minimum candidates check
-                if len(global_pool) < settings.MIN_REQUIRED_PATENTS:
-                    logger.error(f"INSUFFICIENT_CANDIDATES: Found {len(global_pool)} families (minimum: {settings.MIN_REQUIRED_PATENTS})")
-                    logger.error("Discovery failed to find minimum required patents.")
-                    raise Exception(f"INSUFFICIENT_CANDIDATES: Found {len(global_pool)} families (minimum: {settings.MIN_REQUIRED_PATENTS})")
-                
-                # ── COMPETITOR DISCOVERY (Separate Channel) ──
-                competitor_pool = {}  # Separate pool for competitor patents
-                from app.services.pipeline.competitor_service import CompetitorService
-                competitor_service = CompetitorService()
-                
-                if run.competitors:
-                    logger.info("")
-                    logger.info("=" * 60)
-                    logger.info("COMPETITOR DISCOVERY")
-                    logger.info("=" * 60)
-                    
-                    for competitor in run.competitors:
-                        try:
-                            logger.info(f"[COMPETITOR DISCOVERY] Competitor: {competitor}")
-                            
-                            # Generate competitor-specific queries
-                            competitor_queries = competitor_service.generate_competitor_queries(competitor, profile)
-                            logger.info(f"  Queries generated: {len(competitor_queries)}")
-                            
-                            # Convert to dict format for SearchService
-                            competitor_raw_queries = []
-                            for cq in competitor_queries:
-                                competitor_raw_queries.append({
-                                    "query": cq.query,
-                                    "search_field": cq.field.name,
-                                    "tier": cq.category.name,
-                                    "priority": cq.priority.name
-                                })
-                            
-                            # Competitor-specific diagnostics
-                            comp_raw_results = 0
-                            comp_jurisdiction_accepted = 0
-                            comp_jurisdiction_rejected = 0
-                            comp_date_accepted = 0
-                            comp_date_rejected = 0
-                            comp_titles_accepted = 0
-                            comp_titles_rejected = 0
-                            comp_assignee_matches = 0
-                            comp_unique_families = 0
-                            
-                            # Execute competitor searches
-                            for comp_q_dict in competitor_raw_queries:
-                                try:
-                                    # Validate query
-                                    is_valid, validation_reason = self.search_service.validate_query(comp_q_dict["query"], comp_q_dict["search_field"])
-                                    if not is_valid:
-                                        logger.warning(f"  Query validation failed: {comp_q_dict['query']} - {validation_reason}")
-                                        continue
-                                    
-                                    # Create DB Query record for competitor
-                                    comp_sq_model = SearchQueryModel(
-                                        research_run_id=self.run_id,
-                                        query_text=comp_q_dict["query"],
-                                        field=comp_q_dict["search_field"],
-                                        category=comp_q_dict["tier"],
-                                        jurisdiction=",".join(allowed_authorities),
-                                        date_start=date_start,
-                                        date_end=date_end,
-                                        status=SearchQueryStatus.SEARCHING
-                                    )
-                                    session.add(comp_sq_model)
-                                    await session.flush()
-                                    
-                                    # Search (limit to 1 page for competitor discovery to save quota)
-                                    comp_page_results, comp_page_success = await self.search_service.search_patents_page(
-                                        query_str=comp_q_dict["query"],
-                                        field=comp_q_dict["search_field"],
-                                        page=1,
-                                        jurisdictions=allowed_authorities,
-                                        date_start=date_start,
-                                        date_end=date_end
-                                    )
-                                    
-                                    if comp_page_success and comp_page_results:
-                                        comp_raw_results += len(comp_page_results)
-                                        
-                                        for res in comp_page_results:
-                                            if not res.get("title"):
-                                                continue
-                                            
-                                            # Python Jurisdiction Filter
-                                            if allowed_authorities and res["jurisdiction"] not in [j.upper() for j in allowed_authorities]:
-                                                comp_jurisdiction_rejected += 1
-                                                continue
-                                            comp_jurisdiction_accepted += 1
-                                            
-                                            # Python Date Filter
-                                            if date_start or date_end:
-                                                pub_date = res.get("publication_date", "").replace("-", "")
-                                                if pub_date:
-                                                    if date_start and pub_date < date_start:
-                                                        comp_date_rejected += 1
-                                                        continue
-                                                    if date_end and pub_date > date_end:
-                                                        comp_date_rejected += 1
-                                                        continue
-                                            comp_date_accepted += 1
-                                            
-                                            # Title Screening
-                                            score, status, signals = title_scorer.score_title(res["title"])
-                                            
-                                            if status in [TitleScreeningStatus.STRONG, TitleScreeningStatus.MEDIUM]:
-                                                comp_titles_accepted += 1
-                                            else:
-                                                comp_titles_rejected += 1
-                                                continue
-                                            
-                                            # Competitor Ownership Validation
-                                            is_competitor_patent = competitor_service.matches_competitor(res, competitor)
-                                            if not is_competitor_patent:
-                                                continue
-                                            comp_assignee_matches += 1
-                                            
-                                            # Create SearchResult with competitor provenance
-                                            comp_db_res = SearchResult(
-                                                research_run_id=self.run_id,
-                                                search_query_id=comp_sq_model.id,
-                                                page_number=1,
-                                                position=res["position"],
-                                                title=res["title"],
-                                                publication_number=res["patent_number"],
-                                                url=res["url"],
-                                                jurisdiction=res["jurisdiction"],
-                                                publication_date=res["publication_date"],
-                                                snippet=res["snippet"],
-                                                title_score=score,
-                                                title_signals=signals,
-                                                title_screening_status=status,
-                                                discovered_by_queries=[comp_q_dict["query"]],
-                                                discovery_source="COMPETITOR",
-                                                competitor_name=competitor
-                                            )
-                                            session.add(comp_db_res)
-                                            
-                                            # Family deduplication within competitor pool
-                                            family_id = re.sub(r'[A-Za-z]\d?$', '', res["patent_number"])
-                                            if family_id not in competitor_pool:
-                                                competitor_pool[family_id] = comp_db_res
-                                                comp_unique_families += 1
-                                            
-                                            # Log ownership validation
-                                            logger.info(f"  Patent: {res['patent_number']}")
-                                            logger.info(f"    Title: {res['title']}")
-                                            logger.info(f"    Assignee: {res.get('assignee', 'N/A')}")
-                                            logger.info(f"    Applicant: {res.get('applicant', 'N/A')}")
-                                            logger.info(f"    Ownership Match: YES")
-                                            logger.info(f"    Jurisdiction: {res['jurisdiction']}")
-                                            logger.info(f"    Publication Date: {res['publication_date']}")
-                                    
-                                    # Update query status
-                                    comp_sq_model.status = SearchQueryStatus.COMPLETED
-                                    comp_sq_model.page_count = 1
-                                    comp_sq_model.result_count = comp_titles_accepted
-                                    
-                                except Exception as e:
-                                    logger.error(f"  Competitor query failed: {comp_q_dict['query']} - {e}")
-                                    continue
-                            
+                        if sq_model:
+                            sq_model.page_count = page
+                            sq_model.result_count = (sq_model.result_count or 0) + len(page_results)
                             await session.commit()
                             
-                            # Log competitor diagnostics
-                            logger.info(f"  Raw results: {comp_raw_results}")
-                            logger.info(f"  Jurisdiction accepted: {comp_jurisdiction_accepted}")
-                            logger.info(f"  Jurisdiction rejected: {comp_jurisdiction_rejected}")
-                            logger.info(f"  Date accepted: {comp_date_accepted}")
-                            logger.info(f"  Date rejected: {comp_date_rejected}")
-                            logger.info(f"  Titles accepted: {comp_titles_accepted}")
-                            logger.info(f"  Assignee/applicant matches: {comp_assignee_matches}")
-                            logger.info(f"  Unique families: {comp_unique_families}")
-                            logger.info("")
-                            
-                        except Exception as e:
-                            logger.error(f"COMPETITOR DISCOVERY FAILED for {competitor}: {e}")
-                            logger.error("Continuing with other competitors...")
-                            continue
-                    
-                    logger.info("=" * 60)
-                    logger.info(f"TOTAL COMPETITOR PATENTS: {len(competitor_pool)} families")
-                    logger.info("=" * 60)
-                else:
-                    logger.info("")
-                    logger.info("No competitors provided - skipping competitor discovery")
-                
-                # ── WEBSITE DISCOVERY (Separate Channel) ──
-                from app.services.pipeline.website_service import WebsiteService
-                website_service = WebsiteService()
-                
-                if run.mentioned_websites:
-                    logger.info("")
-                    logger.info("=" * 60)
-                    logger.info("WEBSITE DISCOVERY")
-                    logger.info("=" * 60)
-                    
-                    for website_url in run.mentioned_websites:
-                        try:
-                            domain, website_queries = website_service.generate_website_queries(website_url, profile)
-                            logger.info(f"[WEBSITE DISCOVERY] Domain: {domain}")
-                            logger.info(f"  Queries generated: {len(website_queries)}")
-                            
-                            website_evidences = []
-                            
-                            # Execute website searches (using regular web search, not patents)
-                            for wq in website_queries[:3]:  # Limit to 3 queries per website
-                                try:
-                                    # Note: This would need a web search service, not patent search
-                                    # For now, just log the query
-                                    logger.info(f"  Query: {wq}")
-                                    # TODO: Integrate with web search service when available
-                                except Exception as e:
-                                    logger.warning(f"  Website query failed: {wq} - {e}")
-                                    continue
-                            
-                            # Store website evidences in ResearchRun
-                            if website_evidences:
-                                if not run.website_evidences:
-                                    run.website_evidences = []
-                                run.website_evidences.extend(website_evidences)
-                                await session.commit()
-                            
-                            logger.info(f"  Evidence collected: {len(website_evidences)}")
-                            logger.info("")
-                            
-                        except Exception as e:
-                            logger.error(f"WEBSITE DISCOVERY FAILED for {website_url}: {e}")
-                            logger.error("Continuing with other websites...")
-                            continue
-                    
-                    logger.info("=" * 60)
-                    logger.info(f"TOTAL WEBSITE SOURCES: {len(run.mentioned_websites)}")
-                    logger.info("=" * 60)
-                else:
-                    logger.info("")
-                    logger.info("No websites provided - skipping website discovery")
-                
-                # ── FINAL EVIDENCE SUMMARY ──
+                        # Check Early Stopping — only when primary pool is large enough
+                        if len(global_pool) >= target_families:
+                            search_exhausted = True
+                            logger.info(
+                                "Target of %d PRIMARY candidates reached. Stopping search early.",
+                                target_families
+                            )
+                            break
+
+                # ── SEARCH RESULTS SUMMARY ──────────────────────────────────
                 logger.info("")
-                logger.info("=" * 60)
-                logger.info("FINAL EVIDENCE SUMMARY")
-                logger.info("=" * 60)
-                logger.info(f"PRIMARY PATENTS: {len(global_pool)} families")
-                logger.info(f"COMPETITOR PATENTS: {len(competitor_pool)} families")
-                if run.competitors:
-                    for comp in run.competitors:
-                        comp_count = sum(1 for p in competitor_pool.values() if p.competitor_name == comp)
-                        logger.info(f"  {comp}: {comp_count}")
-                logger.info(f"WEBSITE SOURCES: {len(run.mentioned_websites) if run.mentioned_websites else 0}")
-                logger.info(f"TOTAL PATENT EVIDENCE: Primary={len(global_pool)}, Competitor={len(competitor_pool)}")
-                logger.info("=" * 60)
-                    
-                # ── Step 3: Gemini Semantic Ranking (Primary Only)
-                await self._update_status(session, run, RunStatus.FILTERING)
+                logger.info("SEARCH RESULTS:")
+                logger.info(f"Raw unique patents: {total_family_unique}")
+                logger.info("")
+                logger.info("TITLE SCREEN:")
+                logger.info(f"Accepted: {total_titles_accepted}")
+                logger.info(f"Rejected: {total_titles_rejected}")
+
+                # ── Stage 2: Content Verification for GENERIC_VERIFY candidates ──
+                # Fetch these candidates' content now (before final selection) to
+                # decide whether they should be upgraded to ACCEPT or rejected.
+                generic_verify_candidates = [
+                    cand for cand in global_pool.values()
+                    if getattr(cand, '_title_tier', TIER_ACCEPT) == TIER_GENERIC_VERIFY
+                ]
+                content_verified = 0
+                content_rejected = 0
+                generic_verify_rejected_ids = set()
 
                 logger.info("")
-                logger.info("=" * 60)
-                logger.info("DISCOVERY ELIGIBLE CANDIDATES")
-                logger.info("=" * 60)
-                logger.info(f"Total families in discovery pool: {len(global_pool)}")
+                logger.info("CONTENT VERIFICATION:")
+                logger.info(f"Verified candidates: {len(generic_verify_candidates)}")
 
-                # Count title screening distribution
-                strong_count = sum(1 for r in global_pool.values() if r.title_screening_status == TitleScreeningStatus.STRONG)
-                medium_count = sum(1 for r in global_pool.values() if r.title_screening_status == TitleScreeningStatus.MEDIUM)
-                weak_count = sum(1 for r in global_pool.values() if r.title_screening_status == TitleScreeningStatus.WEAK)
-                none_count = sum(1 for r in global_pool.values() if r.title_screening_status is None)
+                for gv_cand in generic_verify_candidates:
+                    # Try to get cached document first
+                    try:
+                        gv_doc = await self.patent_repo.get_by_patent_number(session, gv_cand.publication_number)
+                        if gv_doc:
+                            gv_parsed = ParsedPatent(
+                                url=gv_cand.url,
+                                abstract=gv_doc.abstract or "",
+                                detailed_description=gv_doc.description or "",
+                                examples=gv_doc.examples or "",
+                                claims=gv_doc.claims or "",
+                                patent_number=gv_cand.publication_number
+                            )
+                        else:
+                            gv_parsed = await self.fetcher_service.fetch_patent(gv_cand.url)
+                            if gv_parsed:
+                                gv_parsed.patent_number = gv_cand.publication_number
+                    except Exception as e:
+                        logger.warning("Content fetch failed for GENERIC_VERIFY %s: %s", gv_cand.publication_number, e)
+                        gv_parsed = None
 
-                logger.info(f"Title screening - STRONG: {strong_count}")
-                logger.info(f"Title screening - MEDIUM: {medium_count}")
-                logger.info(f"Title screening - WEAK: {weak_count}")
-                logger.info(f"Title screening - NONE: {none_count}")
-
-                # Include both STRONG and MEDIUM candidates for ranking
-                # Title screening is a quality indicator, not a hard eligibility filter
-                candidates_to_rank = [r for r in global_pool.values()
-                                      if r.title_screening_status in (TitleScreeningStatus.STRONG, TitleScreeningStatus.MEDIUM)]
-
-                logger.info(f"Candidates eligible for ranking (STRONG + MEDIUM): {len(candidates_to_rank)}")
-
-                # If still insufficient, include WEAK candidates as well
-                if len(candidates_to_rank) < settings.MAX_FINAL_PATENTS:
-                    weak_candidates = [r for r in global_pool.values() if r.title_screening_status == TitleScreeningStatus.WEAK]
-                    candidates_to_rank.extend(weak_candidates)
-                    logger.info(f"Supplemented with WEAK candidates: {len(weak_candidates)}")
-                    logger.info(f"Total candidates for ranking: {len(candidates_to_rank)}")
-
-                logger.info("=" * 60)
-                
-                if candidates_to_rank:
-                    gemini_ranking_status = "GEMINI_RANKING_FAILED"
-                    ranked_results = await self.validation_service.rank_titles(
-                        [{"publication_number": c.publication_number, "title": c.title} for c in candidates_to_rank], 
-                        profile
-                    )
+                    val_result = title_scorer.verify_content(gv_parsed, profile)
                     
-                    # Check if ranking actually succeeded (non-empty results with decision/reason)
-                    if ranked_results and all(hasattr(r, 'decision') and hasattr(r, 'reason') for r in ranked_results):
-                        gemini_ranking_status = "GEMINI_RANKING_SUCCESS"
-                        # Update DB records
-                        for rank_item in ranked_results:
-                            for db_c in candidates_to_rank:
-                                if db_c.publication_number == rank_item.publication_number:
-                                    db_c.gemini_score = rank_item.score
-                                    db_c.gemini_decision = rank_item.decision
-                                    db_c.gemini_reason = rank_item.reason
-                                    break
-                        await session.commit()
+                    logger.info("CONTENT VERIFY | %s | %s", gv_cand.publication_number, val_result.rejection_reason)
+                    if val_result.target_identity_evidence:
+                        logger.info(f"  [TARGET_IDENTITY_EVIDENCE] {val_result.target_identity_evidence}")
+                    if val_result.precursor_evidence and val_result.transformation_evidence:
+                        logger.info(f"  [PRECURSOR_EVIDENCE] {val_result.precursor_evidence}")
+                        logger.info(f"  [TRANSFORMATION_EVIDENCE] {val_result.transformation_evidence}")
+                    logger.info(f"  [MATERIAL] {'MATCH' if val_result.material_match else 'NO_MATCH'}")
+                    logger.info(f"  [SYNTHESIS] {'MATCH' if val_result.synthesis_match else 'NO_MATCH'} | [SYNTHESIS_EVIDENCE] {val_result.synthesis_evidence}")
+                    logger.info(f"  [ATTRIBUTE] {val_result.attribute_match} | [ATTRIBUTE_EVIDENCE] {val_result.attribute_evidence}")
+                    logger.info(f"  [FORMULATION_ONLY] {'YES' if val_result.formulation_only else 'NO'}")
+                    logger.info(f"  [DOWNSTREAM_ONLY] {'YES' if val_result.downstream_only else 'NO'}")
+                    logger.info(f"  [BACKGROUND_ONLY] {'YES' if val_result.background_only else 'NO'}")
+                    logger.info(f"  [PRECURSOR_ONLY] {'YES' if val_result.precursor_only else 'NO'}")
+                    logger.info(f"  [VALIDATION] {val_result.final_decision}")
+
+                    if val_result.final_decision == "UNCERTAIN":
+                        logger.info("  -> Attempting targeted extraction to resolve uncertainty")
+                        if gv_parsed:
+                            try:
+                                ext_res = await self.extractor_service.extract_patent(
+                                    parsed_patent=gv_parsed,
+                                    patent_number=gv_cand.publication_number,
+                                    title=gv_cand.title,
+                                    jurisdiction=gv_cand.jurisdiction,
+                                    source_url=gv_cand.url,
+                                    profile=profile
+                                )
+                                if ext_res and ext_res.extraction and (len(ext_res.extraction.parameters) > 0 or len(ext_res.extraction.examples) > 0):
+                                    val_result.final_decision = "ACCEPT"
+                                    logger.info("  -> RESOLVED TO ACCEPT via targeted extraction")
+                                else:
+                                    val_result.final_decision = "REJECT"
+                                    logger.info("  -> RESOLVED TO REJECT (targeted extraction found 0 evidence)")
+                            except Exception as e:
+                                logger.error(f"Targeted extraction failed for {gv_cand.publication_number}: {e}")
+                                val_result.final_decision = "REJECT"
+
+                    if val_result.final_decision == "ACCEPT":
+                        content_verified += 1
+                        gv_cand._title_tier = TIER_ACCEPT  # promote
+                        # Cache for later fetch step
+                        if gv_parsed and gv_doc is None:
+                            try:
+                                await self.patent_repo.create_or_update(session, {
+                                    "patent_number": gv_cand.publication_number,
+                                    "jurisdiction": gv_cand.jurisdiction,
+                                    "title": gv_cand.title,
+                                    "abstract": gv_parsed.abstract,
+                                    "description": gv_parsed.detailed_description,
+                                    "examples": gv_parsed.examples,
+                                    "claims": gv_parsed.claims,
+                                    "publication_date": gv_cand.publication_date
+                                })
+                            except Exception:
+                                pass
                     else:
-                        logger.error("GEMINI_RANKING_FAILED: LLM ranking returned invalid or empty results")
-                        logger.error("Schema validation likely failed - missing decision/reason fields")
-                        # Do NOT invent Gemini decisions - keep gemini fields as None
-                        # Use title-screened candidates as provisional candidates
-                        gemini_ranking_status = "DETERMINISTIC_FALLBACK"
+                        content_rejected += 1
+                        generic_verify_rejected_ids.add(gv_cand.publication_number)
+                        # Remove from pool
+                        for fid, poolcand in list(global_pool.items()):
+                            if poolcand.publication_number == gv_cand.publication_number:
+                                del global_pool[fid]
+                                break
+
+                logger.info(f"Accepted after verification: {content_verified}")
+                logger.info(f"Rejected after verification: {content_rejected}")
+
+                # Rank primary pool by score descending, cap at target_families
+                primary_candidates = sorted(
+                    global_pool.values(),
+                    key=lambda x: -(x.title_score or 0)
+                )
+                final_keep_patents = primary_candidates[:target_families]
+
+                total_detected = total_family_unique
+                total_eligible = len(final_keep_patents)
                 
-                # ── Step 4: Top 15 Selection
-                logger.info("")
-                logger.info("=" * 60)
-                logger.info("PRIMARY PATENT SELECTION")
-                logger.info("=" * 60)
-                logger.info(f"PRIMARY PATENT TARGET: {settings.MAX_FINAL_PATENTS}")
-                logger.info(f"Candidates received from discovery: {len(candidates_to_rank)}")
-
-                if gemini_ranking_status == "GEMINI_RANKING_SUCCESS":
-                    # Get candidates with Gemini KEEP decision
-                    gemini_keep_candidates = [c for c in candidates_to_rank if c.gemini_decision == "KEEP"]
-                    gemini_keep_candidates.sort(key=lambda x: x.gemini_score or 0, reverse=True)
-                    logger.info(f"Gemini KEEP candidates: {len(gemini_keep_candidates)}")
-
-                    # If Gemini returned fewer than 15, supplement with best title-screened candidates
-                    if len(gemini_keep_candidates) < settings.MAX_FINAL_PATENTS:
-                        logger.warning(f"WARNING: Gemini returned {len(gemini_keep_candidates)} candidates but {settings.MAX_FINAL_PATENTS} primary patents are required.")
-                        logger.warning("Supplementing with best title-screened candidates to reach target.")
-
-                        # Get candidates not in Gemini KEEP set
-                        other_candidates = [c for c in candidates_to_rank if c.gemini_decision != "KEEP"]
-                        other_candidates.sort(key=lambda x: x.title_score or 0, reverse=True)
-
-                        # Combine: Gemini KEEP first, then best title-screened
-                        final_candidates = gemini_keep_candidates + other_candidates
-                        logger.info(f"Supplemented with {len(other_candidates)} title-screened candidates")
-                    else:
-                        final_candidates = gemini_keep_candidates
-                        logger.info("Gemini returned sufficient candidates - no supplementation needed")
-
-                    # Sort combined set by score (Gemini score first, then title score)
-                    final_candidates.sort(key=lambda x: (x.gemini_score or 0, x.title_score or 0), reverse=True)
-                    top_15 = final_candidates[:settings.MAX_FINAL_PATENTS]
-                    logger.info(f"GEMINI_RANKING_SUCCESS: {len(top_15)} candidates selected (target: {settings.MAX_FINAL_PATENTS})")
-                else:
-                    # Ranking failed - use title-screened candidates as provisional
-                    logger.warning(f"{gemini_ranking_status}: Using title-screened candidates as provisional selection")
-                    top_15 = sorted(candidates_to_rank, key=lambda x: x.title_score or 0, reverse=True)[:settings.MAX_FINAL_PATENTS]
-                    # Mark these as provisional in DB
-                    for c in top_15:
-                        c.gemini_decision = "PROVISIONAL"
-                        c.gemini_reason = "Gemini ranking failed; candidate selected using deterministic title screening."
-                    await session.commit()
-                    logger.info(f"DETERMINISTIC_FALLBACK: {len(top_15)} candidates selected (target: {settings.MAX_FINAL_PATENTS})")
-
-                logger.info("=" * 60)
-                
-                # Mark final candidates in database
-                for rank, candidate in enumerate(top_15, 1):
+                # Mark candidates for DB tracking
+                for rank, candidate in enumerate(final_keep_patents, 1):
                     candidate.selection_rank = rank
                     candidate.is_final_selection = True
+                    candidate.gemini_decision = "KEEP"
+
                 await session.commit()
+
+                # ── FINAL TELEMETRY ────────────────────────────
+                total_downstream_rejected = 0
+                total_variant_rejected = 0
+                total_material_match = 0
+                total_synthesis_match = 0
+
+                for c in all_evaluated_candidates:
+                    sigs = c.get('signals', {})
+                    if sigs.get('matched_material'):
+                        total_material_match += 1
+                    if sigs.get('matched_synthesis'):
+                        total_synthesis_match += 1
+                    reason = c.get('rejection_reason', '')
+                    if 'downstream' in reason.lower():
+                        total_downstream_rejected += 1
+                    if 'exclusion' in reason.lower() or 'mismatch' in reason.lower():
+                        total_variant_rejected += 1
+
+                logger.info("")
+                logger.info("============================================================")
+                logger.info("FINAL TELEMETRY")
+                logger.info("============================================================")
+                logger.info(f"RAW RESULTS: {total_raw_results}")
+                logger.info(f"UNIQUE RESULTS: {total_family_unique}")
+                logger.info(f"TITLE MATERIAL MATCH: {total_material_match}")
+                logger.info(f"SYNTHESIS TITLE MATCH: {total_synthesis_match}")
+                logger.info(f"DOWNSTREAM REJECTED: {total_downstream_rejected}")
+                logger.info(f"VARIANT MISMATCH REJECTED: {total_variant_rejected}")
+                logger.info(f"CONTENT VERIFY REJECTED: {content_rejected}")
+                logger.info(f"FAMILY DUPLICATES REMOVED: {total_family_duplicates}")
+                logger.info(f"FINAL RELEVANT PATENTS: {len(final_keep_patents)} / {target_families}")
+                logger.info("============================================================")
+                logger.info("")
                 
-                logger.info(f"Top {len(top_15)} candidates selected: {[c.publication_number for c in top_15]}")
+                logger.info("")
+                logger.info("============================================================")
+                logger.info("PATENT SEARCH")
+                logger.info(f"- Queries generated: {len(raw_queries)}")
+                logger.info(f"- Searches executed: {total_pages_attempted}")
+                logger.info(f"- Successful requests: {total_pages_successful}")
+                logger.info(f"- Failed requests: {total_pages_failed}")
+                logger.info(f"- Serper credits: {total_pages_successful}")
                 
-                # Log final selection details
-                logger.info("================ FINAL TOP PATENTS ================")
-                for rank, candidate in enumerate(top_15, 1):
-                    score = candidate.gemini_score if candidate.gemini_score else candidate.title_score
-                    decision = candidate.gemini_decision if candidate.gemini_decision else "PROVISIONAL"
-                    reason = candidate.gemini_reason if candidate.gemini_reason else "Title-based selection"
-                    logger.info(f"Rank {rank}:")
-                    logger.info(f"  Patent: {candidate.publication_number}")
-                    logger.info(f"  Title: {candidate.title}")
-                    logger.info(f"  Jurisdiction: {candidate.jurisdiction}")
-                    logger.info(f"  Score: {score}")
-                    logger.info(f"  Decision: {decision}")
-                    logger.info(f"  Reason: {reason}")
-                logger.info("=======================================================")
+                logger.info("")
+                logger.info("TITLE SCREENING")
+                logger.info(f"- Candidates: {total_detected}")
+                logger.info(f"- Accepted: {total_eligible}")
+                logger.info(f"- Rejected: {total_titles_rejected}")
+                
+                logger.info("")
+                logger.info("PATENT SELECTION")
+                logger.info(f"- Target maximum: {target_families}")
+                logger.info(f"- Relevant patents found: {total_eligible}")
+                logger.info(f"- Final selected count: {len(final_keep_patents)}")
+                logger.info("============================================================")
+
+                logger.info("")
+                logger.info("FINAL SELECTION:")
+                logger.info(f"Selected: {len(final_keep_patents)} / {target_families}")
+                direct_synthesis_only = all(
+                    getattr(c, '_title_tier', TIER_ACCEPT) in (TIER_ACCEPT,)
+                    for c in final_keep_patents
+                )
+                logger.info(f"FINAL QUALITY CHECK:")
+                logger.info(f"Direct synthesis patents only: {'YES' if direct_synthesis_only else 'NO'}")
+                
+                if len(final_keep_patents) == 0:
+                    if total_raw_results == 0:
+                        msg = "Pipeline FAILED — SEARCH_FAILED: No search results were returned by the discovery layer."
+                        if total_pages_successful == 0 and total_pages_attempted > 0:
+                            msg = "Pipeline FAILED — SEARCH_FAILED: All Serper API requests failed."
+                    else:
+                        msg = "Pipeline FAILED — RELEVANCE_VALIDATION_FAILED: Candidates were found but rejected by relevance validation."
+                    logger.error(msg)
+                    await self._update_status(session, run, RunStatus.FAILED)
+                    return
                 
                 # ── Step 5: Deep Extraction
                 await self._update_status(session, run, RunStatus.EXTRACTING)
+                set_current_stage(TelemetryStage.PATENT_EXTRACTION)
 
                 logger.info("")
-                logger.info("=" * 60)
-                logger.info("PRIMARY EXTRACTION")
-                logger.info("=" * 60)
-                logger.info(f"Primary target: {settings.MAX_FINAL_PATENTS}")
-                logger.info(f"Primary selected: {len(top_15)}")
-                logger.info(f"Extraction started: {len(top_15)}")
+                logger.info("============================================================")
+                logger.info("DEEP EXTRACTION")
+                logger.info("============================================================")
 
                 extraction_success_count = 0
                 extraction_failure_count = 0
 
-                # Process in Token-Aware batches of 3
-                batch_size = 3
-                batches = [top_15[i:i + batch_size] for i in range(0, len(top_15), batch_size)]
+                # 1. Fetch and Prepare Extraction
+                logger.info("Fetching documents and preparing extraction...")
+                fetch_attempted = len(final_keep_patents)
+                fetch_successful = 0
+                fetch_failed = 0
+                fetch_failure_reasons = []
                 
-                for b_idx, batch_cands in enumerate(batches):
-                    # DB Record
-                    b_model = ExtractionBatch(
-                        research_run_id=self.run_id,
-                        batch_number=b_idx + 1,
-                        patent_ids=[c.publication_number for c in batch_cands],
-                        status=BatchStatus.PROCESSING,
-                        started_at=datetime.now(timezone.utc)
-                    )
-                    session.add(b_model)
-                    await session.commit()
-                    
-                    for cand in batch_cands:
-                        try:
-                            # Fetch Full text
-                            doc = await self.patent_repo.get_by_patent_number(session, cand.publication_number)
-                            if doc:
-                                parsed_patent = ParsedPatent(
-                                    url=cand.url, abstract=doc.abstract or "", detailed_description=doc.description or "",
-                                    examples=doc.examples or "", claims=doc.claims or ""
-                                )
-                            else:
-                                parsed_patent = await self.fetcher_service.fetch_patent(cand.url)
-                                if parsed_patent:
-                                    await self.patent_repo.create_or_update(session, {
-                                        "patent_number": cand.publication_number, "jurisdiction": cand.jurisdiction,
-                                        "title": cand.title, "abstract": parsed_patent.abstract,
-                                        "description": parsed_patent.detailed_description, "examples": parsed_patent.examples,
-                                        "claims": parsed_patent.claims, "publication_date": cand.publication_date
-                                    })
-                                    
-                            if not parsed_patent:
-                                logger.error(f"Patent {cand.publication_number}: FAILED - Could not fetch patent document")
-                                extraction_failure_count += 1
-                                continue
-
-                            # Extract
-                            ext = await self.extractor_service.extract_patent(
-                                parsed_patent=parsed_patent,
-                                patent_number=cand.publication_number,
-                                title=cand.title,
-                                jurisdiction=cand.jurisdiction,
-                                source_url=cand.url,
-                                skip_llm=False
+                prep_successful = 0
+                prep_failed = 0
+                prep_failure_reasons = []
+                
+                prep_contexts = {}
+                provider_safe_limit = 9000 # GROQ safe limit
+                
+                extraction_results = {}
+                
+                for cand in final_keep_patents:
+                    try:
+                        doc = await self.patent_repo.get_by_patent_number(session, cand.publication_number)
+                        if doc:
+                            cand._parsed = ParsedPatent(
+                                url=cand.url, abstract=doc.abstract or "", detailed_description=doc.description or "",
+                                examples=doc.examples or "", claims=doc.claims or "", patent_number=cand.publication_number
                             )
-                            if ext and ext.extraction:
-                                ext.extraction.metadata.publication_year = cand.publication_date
-                                extractions_by_patent[cand.publication_number] = ext.extraction
-                                extraction_success_count += 1
-                                logger.info(f"Patent {cand.publication_number}: Extraction SUCCESS")
-
-                                # Missing Data Diagnostics
-                                logger.info(f"--- MISSING DATA DIAGNOSTICS: {cand.publication_number} ---")
-                                logger.info(f"Document length: {len(parsed_patent.detailed_description) + len(parsed_patent.abstract)}")
-                                logger.info(f"Examples found: {parsed_patent.structural_evidence.example_count}")
-
-                                extracted_params = {p.name.lower() for p in ext.extraction.parameters}
-                                logger.info(f"Acrylonitrile extracted: {'YES' if 'acrylonitrile' in extracted_params else 'NO'}")
-                                logger.info(f"Butadiene extracted: {'YES' if 'butadiene' in extracted_params else 'NO'}")
-                                logger.info(f"Monomer ratio extracted: {'YES' if any('ratio' in p for p in extracted_params) else 'NO'}")
-                                logger.info(f"Water extracted: {'YES' if 'water' in extracted_params else 'NO'}")
-                                logger.info(f"Emulsifier extracted: {'YES' if 'emulsifier' in extracted_params else 'NO'}")
-                                logger.info(f"Initiator extracted: {'YES' if 'initiator' in extracted_params else 'NO'}")
-                                logger.info(f"Temperature extracted: {'YES' if 'temperature' in extracted_params else 'NO'}")
-                                logger.info(f"Pressure extracted: {'YES' if 'pressure' in extracted_params else 'NO'}")
-                                logger.info(f"pH extracted: {'YES' if 'ph' in extracted_params else 'NO'}")
-                                logger.info(f"Reaction time extracted: {'YES' if 'time' in extracted_params else 'NO'}")
-                                logger.info(f"Conversion extracted: {'YES' if 'conversion' in extracted_params else 'NO'}")
-                                logger.info(f"LLM analysis: {'SUCCESS' if ext.status == ExtractionStatus.FULL else 'PARTIAL'}")
-                                logger.info(f"--------------------------------------------------")
-                            else:
-                                logger.error(f"Patent {cand.publication_number}: Extraction FAILED - No extraction returned")
-                                extraction_failure_count += 1
-
-                        except Exception as e:
-                            logger.error(f"Patent {cand.publication_number}: Extraction FAILED - Exception: {e}")
-                            extraction_failure_count += 1
+                        else:
+                            cand._parsed = await self.fetcher_service.fetch_patent(cand.url)
+                            if cand._parsed:
+                                cand._parsed.patent_number = cand.publication_number
+                                await self.patent_repo.create_or_update(session, {
+                                    "patent_number": cand.publication_number, "jurisdiction": cand.jurisdiction,
+                                    "title": cand.title, "abstract": cand._parsed.abstract,
+                                    "description": cand._parsed.detailed_description, "examples": cand._parsed.examples,
+                                    "claims": cand._parsed.claims, "publication_date": cand.publication_date
+                                })
+                        
+                        if cand._parsed:
+                            fetch_successful += 1
+                        else:
+                            fetch_failed += 1
+                            fetch_failure_reasons.append(f"{cand.publication_number}: parser returned None")
+                            continue
                             
-                    b_model.status = BatchStatus.COMPLETED
-                    b_model.completed_at = datetime.now(timezone.utc)
-                    await session.commit()
-
-                logger.info(f"Extraction completed: {extraction_success_count}")
-                logger.info(f"Extraction failed: {extraction_failure_count}")
+                    except Exception as e:
+                        fetch_failed += 1
+                        fetch_failure_reasons.append(f"{cand.publication_number}: fetch error {str(e)}")
+                        logger.error(f"Fetch failed for {cand.publication_number}: {e}")
+                        continue
+                        
+                    # EXTRACTION PHASE (Integrated deterministic & LLM)
+                    try:
+                        ext_res = await self.extractor_service.extract_patent(
+                            parsed_patent=cand._parsed,
+                            patent_number=cand.publication_number,
+                            title=cand.title,
+                            jurisdiction=cand.jurisdiction,
+                            source_url=cand.url,
+                            profile=profile
+                        )
+                        
+                        if ext_res and ext_res.extraction:
+                            ext_res.extraction.metadata.publication_year = cand.publication_date
+                            extractions_by_patent[cand.publication_number] = ext_res.extraction
+                            extraction_results[cand.publication_number] = ext_res
+                            extraction_success_count += 1
+                        else:
+                            logger.error(f"Extraction failed (null result) for {cand.publication_number}")
+                            
+                    except Exception as e:
+                        logger.error(f"Extraction failed for {cand.publication_number}: {e}")
+                        continue
+                
+                # Check for 0 usable evidence
+                if extraction_success_count == 0:
+                    logger.info("=" * 60)
+                    logger.info("EXTRACTION FAILED")
+                    logger.info("-" * 17)
+                    logger.info(f"Selected: {len(final_keep_patents)}")
+                    logger.info(f"Fetched: {fetch_successful}")
+                    logger.info(f"Usable evidence: 0")
+                    logger.info(f"\nStatus: FAILED")
+                    logger.info(f"Reason: No usable patent evidence available")
+                    logger.info("=" * 60)
+                    raise ValueError("No usable patent evidence available for report generation.")
+                
+                logger.info("=" * 60)
+                logger.info("PATENT EXTRACTION")
+                logger.info("=" * 60)
+                logger.info(f"Selected patents: {fetch_attempted}")
+                logger.info(f"Fetched successfully: {fetch_successful}")
+                logger.info(f"Total parameters extracted: {sum(len(e.parameters) for e in extractions_by_patent.values())}")
+                logger.info(f"Usable evidence (patents): {extraction_success_count}")
+                logger.info(f"Extraction mode: DETERMINISTIC_ONLY (0 LLM calls)")
+                logger.info(f"Extraction failed: {fetch_successful - extraction_success_count}")
                 logger.info("=" * 60)
 
-                if not extractions_by_patent:
-                    await self._mark_failed(session, run, "No valid patents could be extracted.")
-                    return
+                # Build parsed patent lookup for source_text extraction in evidence service
+                parsed_patents_by_number = {}
+                for cand in final_keep_patents:
+                    if hasattr(cand, '_parsed') and cand._parsed is not None:
+                        parsed_patents_by_number[cand.publication_number] = cand._parsed
                 
                 # ── COMPETITOR PATENT EXTRACTION (Separate Channel) ──
                 competitor_extractions_by_patent = {}
@@ -1086,17 +928,16 @@ class PipelineOrchestrator:
                                 title=comp_cand.title,
                                 jurisdiction=comp_cand.jurisdiction,
                                 source_url=comp_cand.url,
-                                skip_llm=False
+                                profile=profile
                             )
                             
                             if comp_ext and comp_ext.extraction:
                                 comp_ext.extraction.metadata.publication_year = comp_cand.publication_date
                                 competitor_extractions_by_patent[comp_cand.publication_number] = comp_ext.extraction
-                                
-                                # Log extraction success
-                                logger.info(f"  Extraction: SUCCESS")
-                                logger.info(f"  Examples found: {comp_parsed_patent.structural_evidence.example_count}")
-                                logger.info(f"  LLM analysis: {comp_ext.status.name}")
+                                logger.info(f"  Extraction: SUCCESS | %d params, %d examples",
+                                    len(comp_ext.extraction.parameters),
+                                    len(comp_ext.extraction.examples)
+                                )
                             else:
                                 logger.warning(f"  Extraction: FAILED")
                                 
@@ -1109,81 +950,157 @@ class PipelineOrchestrator:
                     logger.info(f"COMPETITOR EXTRACTION COMPLETE: {len(competitor_extractions_by_patent)} extracted")
                     logger.info("=" * 60)
 
+                # ── Step 5.5: Log zero-value patents (no longer dropped)
+                zero_param_count = sum(
+                    1 for ext in extractions_by_patent.values()
+                    if not ext.parameters and not ext.examples
+                )
+                if zero_param_count:
+                    logger.info(
+                        "[EXTRACTION] %d patent(s) have 0 det params and 0 det examples — "
+                        "included in report (LLM will synthesize from metadata/text).",
+                        zero_param_count
+                    )
+
                 # ── Step 6: Generate Report
+
+                if len(extractions_by_patent) == 0:
+                    logger.error(
+                        "EXTRACTION FAILED: 0 patents extracted. Halting pipeline."
+                    )
+                    await self.safe_update_run_status(session, run, RunStatus.FAILED)
+                    return
+
                 await self._update_status(session, run, RunStatus.GENERATING)
-                
-                # ── FINAL REPORT EVIDENCE LOGGING ──
+                set_current_stage(TelemetryStage.REPORT_GENERATION)
+
+                total_chars = sum(len(ext.model_dump_json()) for ext in extractions_by_patent.values())
                 logger.info("")
-                logger.info("=" * 60)
-                logger.info("REPORT EVIDENCE LOGGING")
-                logger.info("=" * 60)
-                logger.info(f"PRIMARY PATENTS: {len(extractions_by_patent)}")
-                logger.info(f"COMPETITOR PATENTS: {len(competitor_extractions_by_patent)}")
-                if run.competitors:
-                    for comp in run.competitors:
-                        comp_count = sum(1 for pn in competitor_extractions_by_patent.keys())
-                        logger.info(f"  {comp}: {comp_count}")
-                logger.info(f"WEBSITE SOURCES: {len(run.mentioned_websites) if run.mentioned_websites else 0}")
-                logger.info(f"TOTAL PATENT EVIDENCE: Primary={len(extractions_by_patent)}, Competitor={len(competitor_extractions_by_patent)}")
-                logger.info("")
-                
-                logger.info("[REPORT EVIDENCE]")
-                for pn, ext in extractions_by_patent.items():
-                    logger.info(f"Patent: {pn}")
-                    logger.info(f"  Title: {ext.metadata.patent_title}")
-                    logger.info(f"  Source Type: PRIMARY")
-                    logger.info(f"  Competitor: N/A")
-                    logger.info(f"  Evidence Size: {len(ext.parameters)} parameters, {len(ext.examples)} examples")
-                    logger.info(f"  Examples Available: {len(ext.examples)}")
-                    logger.info(f"  Claims Available: {'YES' if ext.claims else 'NO'}")
-                    logger.info(f"  Extraction Status: SUCCESS")
-                
-                for pn, ext in competitor_extractions_by_patent.items():
-                    logger.info(f"Patent: {pn}")
-                    logger.info(f"  Title: {ext.metadata.patent_title}")
-                    logger.info(f"  Source Type: COMPETITOR")
-                    logger.info(f"  Competitor: {ext.metadata.assignee}")
-                    logger.info(f"  Evidence Size: {len(ext.parameters)} parameters, {len(ext.examples)} examples")
-                    logger.info(f"  Examples Available: {len(ext.examples)}")
-                    logger.info(f"  Claims Available: {'YES' if ext.claims else 'NO'}")
-                    logger.info(f"  Extraction Status: SUCCESS")
-                
-                logger.info("=" * 60)
-                
+                logger.info("EXTRACTION")
+                logger.info(f"- Selected: {len(final_keep_patents)}")
+                logger.info(f"- Fetched: {fetch_successful}")
+                logger.info(f"- Evidence prepared: {len(extractions_by_patent)}")
+                await session.commit()
+
                 from app.services.pipeline.report_evidence_service import ReportEvidenceService
                 report_evidence_svc = ReportEvidenceService()
-                
+
                 final_evidence = await report_evidence_svc.prepare_final_evidence(
-                    extractions_by_patent, 
+                    extractions_by_patent,
                     self.token_manager,
-                    competitor_extractions_by_patent
+                    competitor_extractions_by_patent,
+                    profile=profile,
+                    selected_candidates=final_keep_patents,
+                    parsed_patents_by_number=parsed_patents_by_number
                 )
-                
-                structured_report = await self.report_service.generate_structured_report(run.compound_name, final_evidence)
-                
+
+                # Build patent manifest (ordered list of all expected patent numbers)
+                patent_manifest = list(extractions_by_patent.keys())
+                structured_report, usage_data = await self.report_service.generate_structured_report(
+                    run.compound_name, final_evidence,
+                    patent_manifest=patent_manifest
+                )
+
+
                 # Guard against None report generation
                 if structured_report is None:
                     logger.error("REPORT_GENERATION_FAILED: generate_structured_report returned None")
                     await self._mark_failed(session, run, "Report generation failed - LLM returned None")
                     return
+
+                # Get expected patent numbers from extractions
+                expected_patent_numbers = set(extractions_by_patent.keys())
+                logger.info(f"Expected patent numbers: {sorted(expected_patent_numbers)}")
+
+                # Count unique patent numbers in report
+                report_patent_numbers = set()
+                for patent in structured_report.methodology_patents:
+                    if patent.patent_details and patent.patent_details.patent_number:
+                        report_patent_numbers.add(patent.patent_details.patent_number)
+
+                logger.info(f"Report patent numbers: {sorted(report_patent_numbers)}")
+                logger.info(f"Unique patents in report: {len(report_patent_numbers)}")
+
+                # Identify missing patents
+                missing_patents = expected_patent_numbers - report_patent_numbers
+                if missing_patents:
+                    logger.error(f"REPORT VALIDATION FAILED: Missing {len(missing_patents)} patents in report")
+                    logger.error(f"Missing patent numbers: {sorted(missing_patents)}")
+                    logger.error("The LLM dropped patents during report generation. This is unacceptable.")
+                    await self._mark_failed(session, run, f"Report generation failed: LLM dropped {len(missing_patents)} patents: {sorted(missing_patents)}")
+                    return
+
+                if len(structured_report.methodology_patents) != len(extractions_by_patent):
+                    logger.error(f"REPORT VALIDATION FAILED: Expected {len(extractions_by_patent)} patents but report contains {len(structured_report.methodology_patents)}")
+                    logger.error("The LLM dropped patents during report generation. This is unacceptable.")
+                    await self._mark_failed(session, run, f"Report generation failed: LLM returned {len(structured_report.methodology_patents)} patents instead of {len(extractions_by_patent)}")
+                    return
+
+                if len(report_patent_numbers) != len(extractions_by_patent):
+                    logger.error(f"REPORT VALIDATION FAILED: Expected {len(extractions_by_patent)} unique patents but report contains {len(report_patent_numbers)}")
+                    await self._mark_failed(session, run, f"Report generation failed: Duplicate or missing patents in report")
+                    return
+
+                logger.info("============================================================")
+                logger.info("REPORT GENERATION")
+                in_tokens = 0
+                out_tokens = 0
+                if usage_data:
+                    if isinstance(usage_data, dict):
+                        in_tokens = usage_data.get("prompt_tokens", 0) or usage_data.get("input_tokens", 0)
+                        out_tokens = usage_data.get("completion_tokens", 0) or usage_data.get("output_tokens", 0)
+                    else:
+                        in_tokens = getattr(usage_data, "prompt_tokens", getattr(usage_data, "input_tokens", 0))
+                        out_tokens = getattr(usage_data, "completion_tokens", getattr(usage_data, "output_tokens", 0))
                 
+                logger.info(f"- Input tokens: {in_tokens}")
+                logger.info(f"- Output tokens: {out_tokens}")
+                logger.info(f"- Total tokens: {in_tokens + out_tokens}")
+                logger.info("============================================================")
+
+                # Pass extraction metadata to report service for deterministic reference generation
+                extraction_metadata = {}
+                for patent_number, extraction in extractions_by_patent.items():
+                    extraction_metadata[patent_number] = {
+                        'patent_title': extraction.metadata.patent_title,
+                        'assignee': extraction.metadata.assignee,
+                        'jurisdiction': extraction.metadata.jurisdiction,
+                        'publication_year': extraction.metadata.publication_year,
+                        'url': extraction.metadata.url
+                    }
+                self.report_service._extraction_metadata = extraction_metadata
+
+                # ── Report Consistency Validation ──────────────────────────────
+                consistency_ok, consistency_errors = self.report_service.validate_report_consistency(
+                    structured_report,
+                    primary_manifest=patent_manifest
+                )
+                if not consistency_ok:
+                    logger.error(
+                        "REPORT CONSISTENCY VALIDATION FAILED (%d errors). Marking run FAILED.",
+                        len(consistency_errors)
+                    )
+                    await self._update_status(session, run, RunStatus.FAILED)
+                    return
+
                 markdown_report = self.report_service.report_to_markdown(structured_report)
-                
+
                 pdf_name = f"APCOTEX_Report_{self.run_id}_{run.report_version}.pdf"
                 docx_name = f"APCOTEX_Report_{self.run_id}_{run.report_version}.docx"
                 md_name = f"APCOTEX_Report_{self.run_id}_{run.report_version}.md"
                 json_name = f"APCOTEX_Report_{self.run_id}_{run.report_version}.json"
-                
+
                 export_dir = self.report_service.export_dir
-                
+
                 with open(os.path.join(export_dir, md_name), "w", encoding="utf-8") as f:
                     f.write(markdown_report)
                 with open(os.path.join(export_dir, json_name), "w", encoding="utf-8") as f:
                     f.write(structured_report.model_dump_json(indent=2))
 
                 pdf_path = await self.report_service.export_to_pdf(markdown_report, pdf_name)
-                docx_path = await self.report_service.export_to_docx(markdown_report, docx_name)
-                
+                # DOCX now built from canonical structured object (not Markdown string)
+                docx_path = await self.report_service.export_to_docx(structured_report, docx_name)
+
                 meta = ReportMetadata(
                     research_run_id=run.id,
                     title=structured_report.title,
@@ -1196,25 +1113,89 @@ class PipelineOrchestrator:
                 )
                 session.add(meta)
                 await session.flush()
-                
+
                 if pdf_path:
                     session.add(ReportFile(report_metadata_id=meta.id, file_type="PDF", file_name=pdf_name, file_path=pdf_path))
-                if docx_path:
-                    session.add(ReportFile(report_metadata_id=meta.id, file_type="MARKDOWN", file_name=docx_name, file_path=docx_path))
+                # Skip DOCX insertion as "DOCX" is not in ReportFileType DB Enum
                 session.add(ReportFile(report_metadata_id=meta.id, file_type="MARKDOWN", file_name=md_name, file_path=os.path.join(export_dir, md_name)))
                 session.add(ReportFile(report_metadata_id=meta.id, file_type="JSON", file_name=json_name, file_path=os.path.join(export_dir, json_name)))
-                
+
                 await self._update_status(session, run, RunStatus.COMPLETED)
                 logger.info("Pipeline Complete!")
 
             except ProviderExhaustedException as e:
+                import traceback
+                logger.error("Pipeline failure (LLM_PROVIDER_EXHAUSTED): %s\n%s", e, traceback.format_exc())
                 if not extractions_by_patent:
-                    logger.error("Pipeline failed due to LLM provider exhaustion before any patents could be extracted: %s", e)
-                    await self._mark_failed(session, run, f"LLM provider exhausted: {str(e)}")
+                    await self.safe_update_run_status(session, run, RunStatus.LLM_PROVIDER_EXHAUSTED)
                 else:
-                    logger.error("Pipeline paused due to LLM provider quota exhaustion, partial results available: %s", e)
-                    await self._update_status(session, run, RunStatus.COMPLETED_PARTIAL)
+                    await self.safe_update_run_status(session, run, RunStatus.COMPLETED_PARTIAL)
             except Exception as e:
                 import traceback
                 logger.error("Pipeline failure: %s\n%s", e, traceback.format_exc())
                 await self._mark_failed(session, run, str(e))
+            finally:
+                # Ensure the final run summary is logged
+                # Fetch telemetry for the summary
+                from app.models.api_usage_log import APIUsageLog
+                try:
+                    usage_res = await session.execute(
+                        select(
+                            func.sum(APIUsageLog.total_tokens).label("total_tokens"),
+                            func.sum(APIUsageLog.input_tokens).label("input_tokens"),
+                            func.sum(APIUsageLog.output_tokens).label("output_tokens"),
+                            func.sum(APIUsageLog.estimated_cost).label("cost")
+                        ).where(APIUsageLog.research_run_id == self.run_id)
+                    )
+                    usage_row = usage_res.first()
+                    input_tokens = usage_row.input_tokens or 0
+                    output_tokens = usage_row.output_tokens or 0
+                    total_tokens = usage_row.total_tokens or 0
+                    total_cost = usage_row.cost or 0.0
+                except:
+                    input_tokens, output_tokens, total_tokens, total_cost = 0, 0, 0, 0.0
+                
+                # Determine how many LLM calls actually completed vs attempted
+                llm_calls_completed = 0
+                if 'qe_in' in locals() and qe_in > 0:
+                    llm_calls_completed += 1
+                if 'in_tokens' in locals() and in_tokens > 0:
+                    llm_calls_completed += 1
+                
+                logger.info("")
+                logger.info("============================================================")
+                logger.info("TOTAL RUN")
+                logger.info(f"- LLM calls attempted: 2")
+                logger.info(f"- LLM calls completed: {llm_calls_completed}")
+                logger.info(f"- Input tokens: {input_tokens}")
+                logger.info(f"- Output tokens: {output_tokens}")
+                logger.info(f"- Total tokens: {total_tokens}")
+                logger.info(f"- Serper credits: {total_pages_attempted if 'total_pages_attempted' in locals() else 0}")
+                logger.info("============================================================")
+                
+                # Final Diagnostic requested by user
+                logger.info("")
+                logger.info("QUERY EXPANSION")
+                logger.info(f"Provider calls: {1 if 'qe_in' in locals() and qe_in > 0 else 0}")
+                logger.info(f"Input: {qe_in if 'qe_in' in locals() else 0}")
+                logger.info(f"Output: {qe_out if 'qe_out' in locals() else 0}")
+                logger.info("")
+                logger.info("SEARCH")
+                logger.info(f"Queries: {len(raw_queries) if 'raw_queries' in locals() else 0}")
+                logger.info(f"Serper credits: {total_pages_attempted if 'total_pages_attempted' in locals() else 0}")
+                logger.info(f"Unique patents: {total_detected if 'total_detected' in locals() else 0}")
+                logger.info("")
+                logger.info("SELECTION")
+                logger.info(f"Relevant: {total_eligible if 'total_eligible' in locals() else 0}")
+                logger.info(f"Selected: {len(final_keep_patents) if 'final_keep_patents' in locals() else 0} / 15")
+                logger.info("")
+                logger.info("REPORT")
+                logger.info(f"Provider calls: {1 if 'in_tokens' in locals() and in_tokens > 0 else 0}")
+                logger.info(f"Input: {in_tokens if 'in_tokens' in locals() else 0}")
+                logger.info(f"Output: {out_tokens if 'out_tokens' in locals() else 0}")
+                logger.info(f"Total: {(in_tokens + out_tokens) if 'in_tokens' in locals() and 'out_tokens' in locals() else 0}")
+                logger.info("")
+                logger.info("RUN STATUS:")
+                logger.info(f"{run.status.name if hasattr(run.status, 'name') else str(run.status)}")
+                logger.info("============================================================")
+

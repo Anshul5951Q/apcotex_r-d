@@ -9,6 +9,7 @@ import {
   Search,
   Eye,
   History,
+  Activity,
 } from "lucide-react";
 
 const BLUE = "#1F5FA8";
@@ -36,6 +37,11 @@ const mainNavItems = [
     path: "/recipe-simulator",
     label: "Recipe Simulator",
     icon: FlaskConical,
+  },
+  {
+    path: "/recipe-history",
+    label: "Recipe History",
+    icon: History,
   },
 ];
 
@@ -188,56 +194,109 @@ export function Sidebar({
         })}
 
         {userRole === "admin" && (
-          <button
-            key="/audit-trail"
-            onClick={() => navigate("/audit-trail")}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              width: "100%",
-              padding: "8px 20px",
-              background: isActive({ path: "/audit-trail" })
-                ? "rgba(31,95,168,0.06)"
-                : "transparent",
-              border: "none",
-              borderLeft: isActive({ path: "/audit-trail" })
-                ? `3px solid ${TEAL}`
-                : "3px solid transparent",
-              color: isActive({ path: "/audit-trail" })
-                ? BLUE
-                : "#6B7280",
-              cursor: "pointer",
-              textAlign: "left",
-              fontSize: "0.875rem",
-              fontWeight: isActive({ path: "/audit-trail" })
-                ? 600
-                : 400,
-              transition: "background 0.12s, color 0.12s",
-            }}
-            onMouseEnter={(e) => {
-              if (!isActive({ path: "/audit-trail" })) {
-                e.currentTarget.style.background = "#F9FAFB";
-                e.currentTarget.style.color = "#374151";
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (!isActive({ path: "/audit-trail" })) {
-                e.currentTarget.style.background =
-                  "transparent";
-                e.currentTarget.style.color = "#6B7280";
-              }
-            }}
-          >
-            <History
-              size={17}
-              strokeWidth={
-                isActive({ path: "/audit-trail" }) ? 2 : 1.5
-              }
-              style={{ flexShrink: 0 }}
-            />
-            <span>Audit Trail</span>
-          </button>
+          <>
+            <button
+              key="/audit-trail"
+              onClick={() => navigate("/audit-trail")}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 20px",
+                background: isActive({ path: "/audit-trail" })
+                  ? "rgba(31,95,168,0.06)"
+                  : "transparent",
+                border: "none",
+                borderLeft: isActive({ path: "/audit-trail" })
+                  ? `3px solid ${TEAL}`
+                  : "3px solid transparent",
+                color: isActive({ path: "/audit-trail" })
+                  ? BLUE
+                  : "#6B7280",
+                cursor: "pointer",
+                textAlign: "left",
+                fontSize: "0.875rem",
+                fontWeight: isActive({ path: "/audit-trail" })
+                  ? 600
+                  : 400,
+                transition: "background 0.12s, color 0.12s",
+              }}
+              onMouseEnter={(e) => {
+                if (!isActive({ path: "/audit-trail" })) {
+                  e.currentTarget.style.background = "#F9FAFB";
+                  e.currentTarget.style.color = "#374151";
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isActive({ path: "/audit-trail" })) {
+                  e.currentTarget.style.background =
+                    "transparent";
+                  e.currentTarget.style.color = "#6B7280";
+                }
+              }}
+            >
+              <History
+                size={17}
+                strokeWidth={
+                  isActive({ path: "/audit-trail" }) ? 2 : 1.5
+                }
+                style={{ flexShrink: 0 }}
+              />
+              <span>Audit Trail</span>
+            </button>
+            
+            <button
+              key="/token-dashboard"
+              onClick={() => navigate("/token-dashboard")}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                width: "100%",
+                padding: "8px 20px",
+                background: isActive({ path: "/token-dashboard" })
+                  ? "rgba(31,95,168,0.06)"
+                  : "transparent",
+                border: "none",
+                borderLeft: isActive({ path: "/token-dashboard" })
+                  ? `3px solid ${TEAL}`
+                  : "3px solid transparent",
+                color: isActive({ path: "/token-dashboard" })
+                  ? BLUE
+                  : "#6B7280",
+                cursor: "pointer",
+                textAlign: "left",
+                fontSize: "0.875rem",
+                fontWeight: isActive({ path: "/token-dashboard" })
+                  ? 600
+                  : 400,
+                transition: "background 0.12s, color 0.12s",
+              }}
+              onMouseEnter={(e) => {
+                if (!isActive({ path: "/token-dashboard" })) {
+                  e.currentTarget.style.background = "#F9FAFB";
+                  e.currentTarget.style.color = "#374151";
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isActive({ path: "/token-dashboard" })) {
+                  e.currentTarget.style.background =
+                    "transparent";
+                  e.currentTarget.style.color = "#6B7280";
+                }
+              }}
+            >
+              <Activity
+                size={17}
+                strokeWidth={
+                  isActive({ path: "/token-dashboard" }) ? 2 : 1.5
+                }
+                style={{ flexShrink: 0 }}
+              />
+              <span>Token Usage</span>
+            </button>
+          </>
         )}
       </nav>
 

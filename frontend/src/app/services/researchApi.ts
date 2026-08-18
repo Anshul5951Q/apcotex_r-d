@@ -2,30 +2,37 @@
 
 const BASE_URL = 'http://localhost:8000/api/v1';
 let cachedToken: string | null = null;
+let tokenPromise: Promise<string> | null = null;
 
 // Helper to auto-login as admin for development purposes
 export async function getToken(): Promise<string> {
   if (cachedToken) return cachedToken;
+  if (tokenPromise) return tokenPromise;
   
-  try {
-    const res = await fetch(`${BASE_URL}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'admin', password: 'Admin@123!' })
-    });
-    
-    if (!res.ok) throw new Error("Auto-login failed");
-    
-    const data = await res.json();
-    cachedToken = data.data.access_token;
-    return cachedToken as string;
-  } catch (error) {
-    console.error("Auth error:", error);
-    throw error;
-  }
+  tokenPromise = (async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'Admin@123!' })
+      });
+      
+      if (!res.ok) throw new Error("Auto-login failed");
+      
+      const data = await res.json();
+      cachedToken = data.data.access_token;
+      return cachedToken as string;
+    } catch (error) {
+      console.error("Auth error:", error);
+      tokenPromise = null;
+      throw error;
+    }
+  })();
+  
+  return tokenPromise;
 }
 
-async function authFetch(endpoint: string, options: RequestInit = {}) {
+export async function authFetch(endpoint: string, options: RequestInit = {}) {
   const token = await getToken();
   
   const headers = {
@@ -38,18 +45,33 @@ async function authFetch(endpoint: string, options: RequestInit = {}) {
     headers
   });
   
+  let finalRes = res;
   // Basic token expiry retry logic
   if (res.status === 401) {
     cachedToken = null;
+    tokenPromise = null;
     const newToken = await getToken();
     headers['Authorization'] = `Bearer ${newToken}`;
-    return fetch(`${BASE_URL}${endpoint}`, {
+    finalRes = await fetch(`${BASE_URL}${endpoint}`, {
       ...options,
       headers
     });
   }
   
-  return res;
+  if (!finalRes.ok) {
+    let errorDetail = "";
+    try {
+      const cloned = finalRes.clone();
+      const data = await cloned.json();
+      errorDetail = JSON.stringify(data);
+    } catch (e) {
+      errorDetail = finalRes.statusText;
+    }
+    const reqId = finalRes.headers.get('x-request-id') || 'N/A';
+    console.error(`[API ERROR]\nEndpoint: ${endpoint}\nMethod: ${options.method || 'GET'}\nStatus: ${finalRes.status}\nResponse: ${errorDetail}\nRequest ID: ${reqId}`);
+  }
+  
+  return finalRes;
 }
 
 export interface ResearchRunPayload {
@@ -139,4 +161,102 @@ export async function downloadFile(id: string, format: 'pdf' | 'docx', filename:
   a.click();
   a.remove();
   window.URL.revokeObjectURL(url);
+}
+
+// ── Recipe Simulator API ──────────────────────────────────────────────────
+
+export async function createRecipeCycle(payload: any) {
+  const res = await authFetch('/recipe/cycles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error('Failed to create recipe cycle');
+  return (await res.json()).data;
+}
+
+export async function getRecipeCycles() {
+  const res = await authFetch('/recipe/cycles');
+  if (!res.ok) throw new Error('Failed to fetch recipe cycles');
+  return (await res.json()).data;
+}
+
+export async function getRecipeCycle(cycleId: string) {
+  const res = await authFetch(`/recipe/cycles/${cycleId}`);
+  if (!res.ok) throw new Error('Failed to fetch recipe cycle');
+  return (await res.json()).data;
+}
+
+export async function updateRecipeCycle(cycleId: string, payload: any) {
+  const res = await authFetch(`/recipe/cycles/${cycleId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error('Failed to update recipe cycle');
+  return (await res.json()).data;
+}
+
+export async function generateRecipes(cycleId: string) {
+  const res = await authFetch(`/recipe/cycles/${cycleId}/generate`, {
+    method: 'POST'
+  });
+  if (!res.ok) throw new Error('Failed to generate recipes');
+  return (await res.json()).data;
+}
+
+export async function getCandidates(cycleId: string) {
+  const res = await authFetch(`/recipe/cycles/${cycleId}/candidates`);
+  if (!res.ok) throw new Error('Failed to fetch candidates');
+  return (await res.json()).data;
+}
+
+export async function selectCandidate(cycleId: string, candidateId: string) {
+  const res = await authFetch(`/recipe/cycles/${cycleId}/select/${candidateId}`, {
+    method: 'POST'
+  });
+  if (!res.ok) throw new Error('Failed to select candidate');
+  return (await res.json()).data;
+}
+
+export async function createCustomerTrial(payload: any) {
+  const res = await authFetch('/recipe/trials', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error('Failed to create customer trial');
+  return (await res.json()).data;
+}
+
+export async function updateCustomerTrial(trialId: string, payload: any) {
+  const res = await authFetch(`/recipe/trials/${trialId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error('Failed to update trial');
+  return (await res.json()).data;
+}
+
+export async function generateOptimization(trialId: string) {
+  const res = await authFetch(`/recipe/trials/${trialId}/optimize`, {
+    method: 'POST'
+  });
+  if (!res.ok) throw new Error('Failed to generate optimization');
+  return (await res.json()).data;
+}
+
+export async function getOptimizedCandidates(trialId: string) {
+  const res = await authFetch(`/recipe/trials/${trialId}/optimized`);
+  if (!res.ok) throw new Error('Failed to fetch optimized candidates');
+  return (await res.json()).data;
+}
+
+export async function selectOptimized(trialId: string, optimizedId: string) {
+  const res = await authFetch(`/recipe/trials/${trialId}/select/${optimizedId}`, {
+    method: 'POST'
+  });
+  if (!res.ok) throw new Error('Failed to select optimized candidate');
+  return (await res.json()).data;
 }

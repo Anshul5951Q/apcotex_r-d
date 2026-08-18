@@ -23,7 +23,7 @@ class OpenAIProvider(BaseLLMProvider):
             raise ValueError("OpenAI API key is not configured.")
         
         self.client = AsyncOpenAI(api_key=self.api_key)
-        self.model_name = model_name or settings.OPENAI_MODEL or "gpt-4o-mini"
+        self.model_name = model_name or settings.OPENAI_MODEL or "gpt-5.4-mini"
 
     def _handle_error(self, e: Exception):
         if isinstance(e, AuthenticationError):
@@ -50,7 +50,13 @@ class OpenAIProvider(BaseLLMProvider):
                     ],
                     temperature=temperature,
                 )
-                return response.choices[0].message.content
+                usage = {}
+                if hasattr(response, 'usage') and response.usage:
+                    usage = {
+                        "input_tokens": getattr(response.usage, "prompt_tokens", None),
+                        "output_tokens": getattr(response.usage, "completion_tokens", None),
+                    }
+                return response.choices[0].message.content, usage
             except Exception as e:
                 try:
                     self._handle_error(e)
@@ -65,7 +71,7 @@ class OpenAIProvider(BaseLLMProvider):
                     else:
                         raise ex
 
-    async def generate_structured(self, prompt: str, system_prompt: str, schema: Type[T], temperature: float = 0.1) -> T | None:
+    async def generate_structured(self, prompt: str, system_prompt: str, schema: Type[T], temperature: float = 0.1) -> tuple[T | None, dict]:
         retries = 2
         delay = 2
         
@@ -82,11 +88,18 @@ class OpenAIProvider(BaseLLMProvider):
                     response_format=schema
                 )
                 
-                return response.choices[0].message.parsed
+                usage = {}
+                if hasattr(response, 'usage') and response.usage:
+                    usage = {
+                        "input_tokens": getattr(response.usage, "prompt_tokens", None),
+                        "output_tokens": getattr(response.usage, "completion_tokens", None),
+                    }
+                
+                return response.choices[0].message.parsed, usage
                 
             except ValidationError as ve:
                 logger.error("LLM Schema Mode: FAILED. Validation error extracting structured data via OpenAI: %s", ve)
-                return None
+                return None, {}
             except Exception as e:
                 try:
                     self._handle_error(e)
@@ -100,4 +113,4 @@ class OpenAIProvider(BaseLLMProvider):
                         delay *= 2
                     else:
                         logger.error("LLM Structured Extraction failed via OpenAI due to persistent errors.")
-                        return None
+                        return None, {}

@@ -15,6 +15,13 @@ from app.models.extracted_parameter import ExtractedParameter
 from app.models.search_query import SearchQueryModel, SearchQueryStatus
 from app.models.search_result import SearchResult, TitleScreeningStatus
 from app.models.extraction_batch import ExtractionBatch, BatchStatus
+from app.models.audit_log import AuditLog
+
+from app.models.api_usage_log import APIUsageLog
+from app.models.recipe_cycle import RecipeCycle, RecipeCycleStatus
+from app.models.recipe_candidate import RecipeCandidate
+from app.models.customer_trial import CustomerTrial, TrialStatus
+from app.models.optimized_recipe_candidate import OptimizedRecipeCandidate
 
 __all__ = [
     "User",
@@ -34,4 +41,12 @@ __all__ = [
     "TitleScreeningStatus",
     "ExtractionBatch",
     "BatchStatus",
+    "AuditLog",
+    "APIUsageLog",
+    "RecipeCycle",
+    "RecipeCycleStatus",
+    "RecipeCandidate",
+    "CustomerTrial",
+    "TrialStatus",
+    "OptimizedRecipeCandidate",
 ]

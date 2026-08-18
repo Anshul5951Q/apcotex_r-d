@@ -1,0 +1,272 @@
+{
+  "title": "Mock Report",
+  "abstract": "Mock abstract",
+  "research_type": "General",
+  "primary_patents": [
+    {
+      "patent_details": {
+        "patent_number": "US202400010A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400011A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400012A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400013A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400014A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400015A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400016A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400017A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400018A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400019A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400020A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400021A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400022A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400023A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    },
+    {
+      "patent_details": {
+        "patent_number": "US202400024A1",
+        "patent_title": "Mock",
+        "assignee": null,
+        "jurisdiction": null,
+        "publication_year": null,
+        "material_type": null,
+        "relevance_to_target": "Mock"
+      },
+      "technical_method": {
+        "section_title": "Mock Method",
+        "parameters": []
+      },
+      "experimental_evidence": [],
+      "technical_relevance": "Mock"
+    }
+  ],
+  "competitor_patents": [],
+  "website_sources": [],
+  "cross_patent_comparison": [
+    "Mock prose 1",
+    "Mock prose 2"
+  ],
+  "conclusion": null,
+  "references": [
+    "Ref 1"
+  ]
+}

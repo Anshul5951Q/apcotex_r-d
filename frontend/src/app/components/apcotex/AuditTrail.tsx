@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Search, Filter, Download, Eye } from "lucide-react";
+import { getAuditLogs, type AuditLogEntry } from "../../services/auditApi";
 
 const BLUE = "#1F5FA8";
 const TEAL = "#1FB7B5";
@@ -8,73 +9,69 @@ const BORDER = "#E5E7EB";
 export function AuditTrail() {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterType, setFilterType] = useState("all");
+  const [auditData, setAuditData] = useState<AuditLogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Mock audit trail data
-  const auditData = [
-    {
-      id: 1,
-      user: "user",
-      action: "Created new recipe",
-      details: "Recipe: NBR Latex Formulation v1",
-      timestamp: "2026-04-30 14:32:15",
-      type: "create",
-    },
-    {
-      id: 2,
-      user: "user",
-      action: "Updated recipe",
-      details: "Recipe: NBR Latex Formulation v1 - Modified Tensile Strength",
-      timestamp: "2026-04-30 15:45:22",
-      type: "update",
-    },
-    {
-      id: 3,
-      user: "user",
-      action: "Deleted recipe",
-      details: "Recipe: SB Latex Test Recipe",
-      timestamp: "2026-04-30 16:20:08",
-      type: "delete",
-    },
-    {
-      id: 4,
-      user: "admin",
-      action: "Login",
-      details: "User logged in successfully",
-      timestamp: "2026-04-30 09:00:00",
-      type: "auth",
-    },
-    {
-      id: 5,
-      user: "user",
-      action: "Login",
-      details: "User logged in successfully",
-      timestamp: "2026-04-30 10:15:30",
-      type: "auth",
-    },
-    {
-      id: 6,
-      user: "user",
-      action: "Viewed recipe",
-      details: "Recipe: XSB Latex Formulation",
-      timestamp: "2026-04-30 11:30:45",
-      type: "view",
-    },
-    {
-      id: 7,
-      user: "admin",
-      action: "Exported report",
-      details: "Exported Recipe Summary Report",
-      timestamp: "2026-04-30 12:00:00",
-      type: "export",
-    },
-  ];
+  useEffect(() => {
+    loadAuditLogs();
+  }, []);
+
+  const loadAuditLogs = async () => {
+    try {
+      setLoading(true);
+      const response = await getAuditLogs({ page_size: 100 });
+      setAuditData(response.items);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load audit logs");
+      console.error("Error loading audit logs:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getActionType = (action: string): string => {
+    if (action.includes("LOGIN") || action.includes("LOGOUT")) return "auth";
+    if (action.includes("CREATED")) return "create";
+    if (action.includes("UPDATED")) return "update";
+    if (action.includes("DELETED")) return "delete";
+    if (action.includes("VIEWED")) return "view";
+    if (action.includes("EXPORTED") || action.includes("DOWNLOADED")) return "export";
+    return "other";
+  };
+
+  const formatDetail = (detail: Record<string, any>): string => {
+    if (!detail || Object.keys(detail).length === 0) return "No details";
+    const keys = Object.keys(detail);
+    if (keys.includes("username")) return `User: ${detail.username}`;
+    if (keys.includes("compound")) return `Compound: ${detail.compound}`;
+    if (keys.includes("recipe_name")) return `Recipe: ${detail.recipe_name}`;
+    if (keys.includes("property")) return `Property: ${detail.property}`;
+    if (keys.includes("error")) return `Error: ${detail.error}`;
+    return JSON.stringify(detail).substring(0, 100);
+  };
+
+  const formatTimestamp = (timestamp: string): string => {
+    const date = new Date(timestamp);
+    return date.toLocaleString("en-US", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  };
 
   const filteredData = auditData.filter((item) => {
+    const detailStr = formatDetail(item.detail);
+    const actionType = getActionType(item.action);
     const matchesSearch =
-      item.user.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.user_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
       item.action.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.details.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesFilter = filterType === "all" || item.type === filterType;
+      detailStr.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesFilter = filterType === "all" || actionType === filterType;
     return matchesSearch && matchesFilter;
   });
 
@@ -92,6 +89,8 @@ export function AuditTrail() {
         return "#3B82F6";
       case "export":
         return "#8B5CF6";
+      case "other":
+        return "#6B7280";
       default:
         return "#6B7280";
     }
@@ -219,83 +218,8 @@ export function AuditTrail() {
             overflow: "hidden",
           }}
         >
-          {/* Table Header */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "80px 150px 180px 1fr 200px 80px",
-              padding: "16px 20px",
-              background: "#F9FAFB",
-              borderBottom: `1px solid ${BORDER}`,
-              fontSize: "0.75rem",
-              fontWeight: 600,
-              color: "#6B7280",
-              textTransform: "uppercase",
-              letterSpacing: "0.05em",
-            }}
-          >
-            <div>ID</div>
-            <div>User</div>
-            <div>Action</div>
-            <div>Details</div>
-            <div>Timestamp</div>
-            <div></div>
-          </div>
-
-          {/* Table Body */}
-          {filteredData.map((item) => (
-            <div
-              key={item.id}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "80px 150px 180px 1fr 200px 80px",
-                padding: "16px 20px",
-                borderBottom: `1px solid ${BORDER}`,
-                fontSize: "0.875rem",
-                alignItems: "center",
-              }}
-            >
-              <div style={{ color: "#6B7280" }}>#{item.id}</div>
-              <div style={{ fontWeight: 500, color: "#1F2937" }}>{item.user}</div>
-              <div>
-                <span
-                  style={{
-                    display: "inline-block",
-                    padding: "4px 10px",
-                    borderRadius: "4px",
-                    fontSize: "0.75rem",
-                    fontWeight: 500,
-                    background: `${getActionColor(item.type)}15`,
-                    color: getActionColor(item.type),
-                  }}
-                >
-                  {item.action}
-                </span>
-              </div>
-              <div style={{ color: "#4B5563" }}>{item.details}</div>
-              <div style={{ color: "#6B7280", fontSize: "0.8125rem" }}>
-                {item.timestamp}
-              </div>
-              <div>
-                <button
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: "6px",
-                    background: "transparent",
-                    border: `1px solid ${BORDER}`,
-                    borderRadius: "6px",
-                    cursor: "pointer",
-                  }}
-                >
-                  <Eye size={14} style={{ color: "#6B7280" }} />
-                </button>
-              </div>
-            </div>
-          ))}
-
-          {filteredData.length === 0 && (
+          {/* Loading State */}
+          {loading && (
             <div
               style={{
                 padding: "48px",
@@ -303,8 +227,117 @@ export function AuditTrail() {
                 color: "#6B7280",
               }}
             >
-              No audit trail records found
+              Loading audit logs...
             </div>
+          )}
+
+          {/* Error State */}
+          {!loading && error && (
+            <div
+              style={{
+                padding: "48px",
+                textAlign: "center",
+                color: "#EF4444",
+              }}
+            >
+              {error}
+            </div>
+          )}
+
+          {/* Table */}
+          {!loading && !error && (
+            <>
+              {/* Table Header */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "80px 150px 180px 1fr 200px 80px",
+                  padding: "16px 20px",
+                  background: "#F9FAFB",
+                  borderBottom: `1px solid ${BORDER}`,
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                  color: "#6B7280",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                <div>ID</div>
+                <div>User</div>
+                <div>Action</div>
+                <div>Details</div>
+                <div>Timestamp</div>
+                <div></div>
+              </div>
+
+              {/* Table Body */}
+              {filteredData.map((item) => {
+                const actionType = getActionType(item.action);
+                return (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "80px 150px 180px 1fr 200px 80px",
+                      padding: "16px 20px",
+                      borderBottom: `1px solid ${BORDER}`,
+                      fontSize: "0.875rem",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ color: "#6B7280" }}>#{item.id.substring(0, 8)}</div>
+                    <div style={{ fontWeight: 500, color: "#1F2937" }}>{item.user_id}</div>
+                    <div>
+                      <span
+                        style={{
+                          display: "inline-block",
+                          padding: "4px 10px",
+                          borderRadius: "4px",
+                          fontSize: "0.75rem",
+                          fontWeight: 500,
+                          background: `${getActionColor(actionType)}15`,
+                          color: getActionColor(actionType),
+                        }}
+                      >
+                        {item.action}
+                      </span>
+                    </div>
+                    <div style={{ color: "#4B5563" }}>{formatDetail(item.detail)}</div>
+                    <div style={{ color: "#6B7280", fontSize: "0.8125rem" }}>
+                      {formatTimestamp(item.created_at)}
+                    </div>
+                    <div>
+                      <button
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          padding: "6px",
+                          background: "transparent",
+                          border: `1px solid ${BORDER}`,
+                          borderRadius: "6px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <Eye size={14} style={{ color: "#6B7280" }} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {filteredData.length === 0 && (
+                <div
+                  style={{
+                    padding: "48px",
+                    textAlign: "center",
+                    color: "#6B7280",
+                  }}
+                >
+                  No audit trail records found
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -344,7 +377,10 @@ export function AuditTrail() {
               Today's Activity
             </div>
             <div style={{ fontSize: "1.875rem", fontWeight: 700, color: TEAL }}>
-              {auditData.filter((item) => item.timestamp.startsWith("2026-04-30")).length}
+              {auditData.filter((item) => {
+                const today = new Date().toISOString().split('T')[0];
+                return item.created_at.startsWith(today);
+              }).length}
             </div>
           </div>
           <div
@@ -359,7 +395,7 @@ export function AuditTrail() {
               Active Users
             </div>
             <div style={{ fontSize: "1.875rem", fontWeight: 700, color: BLUE }}>
-              2
+              {new Set(auditData.map(item => item.user_id)).size}
             </div>
           </div>
         </div>

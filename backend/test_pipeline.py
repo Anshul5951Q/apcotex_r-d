@@ -9,12 +9,21 @@ from app.services.pipeline.orchestrator import PipelineOrchestrator
 
 async def test_run():
     async with AsyncSession(engine, expire_on_commit=False) as session:
+        # Get an existing user
+        from sqlalchemy import text
+        result = await session.execute(text("SELECT id FROM users LIMIT 1"))
+        user_id = result.scalar()
+        if not user_id:
+            user_id = uuid.uuid4()
+            await session.execute(text(f"INSERT INTO users (id, email, password_hash) VALUES ('{user_id}', 'test@test.com', 'hash')"))
+            await session.commit()
+            
         # Create a new run
         run = ResearchRun(
-            compound_name="Low Acrylonitrile NBR",
+            compound_name="Acetylsalicylic acid",
             status=RunStatus.PENDING,
             jurisdictions=["US", "EP"],
-            created_by=uuid.uuid4(),
+            created_by=user_id,
         )
         session.add(run)
         await session.commit()

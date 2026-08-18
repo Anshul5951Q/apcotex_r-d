@@ -6,39 +6,85 @@ Downloads and parses patents from Google Patents or standard PDFs.
 import io
 import logging
 import re
+import time
 from typing import Optional
 
 import httpx
 from bs4 import BeautifulSoup
 import pdfplumber
 
-from app.services.pipeline.schemas import ParsedPatent
+from app.services.pipeline.schemas import ParsedPatent, StructuralEvidence
 
 logger = logging.getLogger(__name__)
 
 
 class FetcherService:
     async def fetch_patent(self, url: str) -> Optional[ParsedPatent]:
-        """
-        Download the patent and extract sections into a ParsedPatent.
-        Supports HTML (Google Patents) and PDF.
-        """
-        logger.info("Fetching patent from %s...", url)
+        """Fetch full HTML and extract structured patent data."""
+        logger.info("Fetching full patent content from %s...", url)
+        start_time = time.time()
+        
         try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with httpx.AsyncClient(follow_redirects=True, limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)) as client:
                 response = await client.get(url, timeout=30.0)
                 response.raise_for_status()
                 
                 content_type = response.headers.get("Content-Type", "")
-                
                 if "application/pdf" in content_type.lower() or url.lower().endswith(".pdf"):
-                    parsed = self._parse_pdf(response.content)
+                    pdf_bytes = await response.aread()
+                    parsed = self._parse_pdf(pdf_bytes)
                 else:
-                    parsed = self._parse_google_patents_html(response.text)
-                
+                    html = response.text
+                    # Explicit validation: ensure HTML is not empty
+                    if not html or len(html.strip()) == 0:
+                        raise ValueError("Parser Error: Received empty HTML content from Google Patents.")
+                        
+                    parsed = self._parse_google_patents_html(html)
+                    
+                    if not parsed:
+                        raise ValueError("Parser Error: _parse_google_patents_html returned None for valid HTML.")
+                        
                 parsed.url = url
+                parsed.patent_number = parsed.metadata.get("patent_number") or url.split("/")[-2]
+                parsed.title = parsed.metadata.get("google_patents_title") or parsed.metadata.get("DC.title") or ""
+                parsed.jurisdiction = parsed.metadata.get("jurisdiction") or parsed.patent_number[:2].upper() if parsed.patent_number else ""
+                parsed.publication_date = parsed.metadata.get("publication_date") or parsed.metadata.get("DC.date") or ""
+                parsed.assignee = parsed.metadata.get("assignee") or ""
+                
+                # Check for completely empty parsing
+                if not parsed.abstract and not parsed.detailed_description and not parsed.claims:
+                    raise ValueError(f"Parser Error: Failed to extract any meaningful content (abstract, description, claims) for {parsed.patent_number}.")
+                
+                duration_ms = int((time.time() - start_time) * 1000)
+                logger.debug("PATENT FETCH")
+                logger.debug("-" * 12)
+                logger.debug(f"Patent: {parsed.metadata.get('patent_number', 'UNKNOWN')}")
+                logger.debug(f"URL: {url}")
+                logger.debug(f"HTTP Status: {response.status_code}")
+                logger.debug(f"HTML Bytes: {len(response.content)}")
+                logger.debug(f"Description Chars: {len(parsed.detailed_description or '')}")
+                logger.debug(f"Claims Chars: {len(parsed.claims or '')}")
+                logger.debug(f"Examples: {len(parsed.examples)}")
+                logger.debug(f"Latency: {duration_ms}ms")
+                logger.debug(f"Status: SUCCESS")
+                logger.debug("=" * 60)
+                
                 return parsed
         except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.debug("PATENT FETCH")
+            logger.debug("-" * 12)
+            logger.debug(f"Patent: UNKNOWN")
+            logger.debug(f"URL: {url}")
+            logger.debug(f"HTTP Status: N/A")
+            logger.debug(f"HTML Bytes: 0")
+            logger.debug(f"Description Chars: 0")
+            logger.debug(f"Claims Chars: 0")
+            logger.debug(f"Examples: 0")
+            logger.debug(f"Latency: {duration_ms}ms")
+            logger.debug(f"Status: FAILED ({type(e).__name__})")
+            logger.debug("=" * 60)
+            
             logger.error("Failed to fetch patent from %s: %s", url, e)
             return None
 
@@ -198,17 +244,18 @@ class FetcherService:
             evidence = StructuralEvidence()
             
             # 1. Section Headings (Flexible detection)
-            heading_pattern = r'(?i)(example\s*\d*|preparation example|working example|experimental example|manufacturing example|polymerization example|reference example|comparative example|detailed description|best mode|mode for carrying out|embodiment|experimental|procedure|general procedure|reaction procedure|synthesis procedure|polymer preparation|production example)'
+            # Remove the (?i) from the pattern string itself so we can compile it with re.IGNORECASE without breaking substring operations.
+            heading_pattern = r'(example\s*\d*|preparation example|working example|experimental example|manufacturing example|polymerization example|reference example|comparative example|detailed description|best mode|mode for carrying out|embodiment|experimental|procedure|general procedure|reaction procedure|synthesis procedure|polymer preparation|production example)'
             
-            evidence.has_preparation_example = bool(re.search(r'(?i)preparation example', desc_text))
-            evidence.has_experimental_example = bool(re.search(r'(?i)experimental example|experimental procedure', desc_text))
-            evidence.has_working_example = bool(re.search(r'(?i)working example', desc_text))
-            evidence.has_embodiment = bool(re.search(r'(?i)embodiment', desc_text))
-            evidence.has_detailed_description = bool(re.search(r'(?i)detailed description', desc_text))
+            evidence.has_preparation_example = bool(re.search(r'preparation example', desc_text, re.IGNORECASE))
+            evidence.has_experimental_example = bool(re.search(r'experimental example|experimental procedure', desc_text, re.IGNORECASE))
+            evidence.has_working_example = bool(re.search(r'working example', desc_text, re.IGNORECASE))
+            evidence.has_embodiment = bool(re.search(r'embodiment', desc_text, re.IGNORECASE))
+            evidence.has_detailed_description = bool(re.search(r'detailed description', desc_text, re.IGNORECASE))
             evidence.has_claims = bool(parsed.claims)
             
             # 2. Extract Scientific Blocks (Examples & Procedures)
-            ex_matches = list(re.finditer(heading_pattern, desc_text))
+            ex_matches = list(re.finditer(heading_pattern, desc_text, re.IGNORECASE))
             evidence.example_count = len(ex_matches)
             
             if ex_matches:
@@ -217,6 +264,9 @@ class FetcherService:
                 parsed.examples = desc_text[idx:].strip()
             else:
                 parsed.examples = ""
+                
+            # Populate structured sections using regex splitting
+            # (PatentSection parsing has been removed as the deterministic pipeline directly uses ParsedPatent fields)
                 
             evidence.table_count = len(parsed.tables)
             
@@ -266,8 +316,8 @@ class FetcherService:
         claims_len = len(parsed.claims) if parsed.claims else 0
         ex_count = parsed.structural_evidence.example_count if parsed.structural_evidence else 0
         
-        logger.info(f"[DIAGNOSTIC] FETCH: HTTP 200 | HTML bytes: {html_bytes}")
-        logger.info(f"[DIAGNOSTIC] PARSE: abstract length: {abs_len} | description length: {desc_len} | claims length: {claims_len} | examples found: {ex_count}")
+        logger.debug(f"[DIAGNOSTIC] FETCH: HTTP 200 | HTML bytes: {html_bytes}")
+        logger.debug(f"[DIAGNOSTIC] PARSE: abstract length: {abs_len} | description length: {desc_len} | claims length: {claims_len} | examples found: {ex_count}")
         
         # Validation checks
         total_text_len = abs_len + desc_len + claims_len
@@ -275,3 +325,4 @@ class FetcherService:
             logger.error("Parsed text is suspiciously short (length: %d), possible parsing failure.", total_text_len)
             
         return parsed
+

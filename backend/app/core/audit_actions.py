@@ -1,0 +1,61 @@
+"""
+app/core/audit_actions.py
+
+Centralized audit action constants.
+All audit actions must use these constants to ensure consistency.
+"""
+
+
+class AuditAction:
+    """Audit action type constants."""
+
+    # Authentication
+    LOGIN = "LOGIN"
+    LOGOUT = "LOGOUT"
+    LOGIN_FAILED = "LOGIN_FAILED"
+
+    # Research
+    RESEARCH_CREATED = "RESEARCH_CREATED"
+    RESEARCH_STARTED = "RESEARCH_STARTED"
+    RESEARCH_COMPLETED = "RESEARCH_COMPLETED"
+    RESEARCH_FAILED = "RESEARCH_FAILED"
+    REPORT_GENERATED = "REPORT_GENERATED"
+    REPORT_VIEWED = "REPORT_VIEWED"
+    REPORT_DOWNLOADED = "REPORT_DOWNLOADED"
+
+    # Recipe (if recipe simulator exists)
+    RECIPE_CREATED = "RECIPE_CREATED"
+    RECIPE_VIEWED = "RECIPE_VIEWED"
+    RECIPE_UPDATED = "RECIPE_UPDATED"
+    RECIPE_DELETED = "RECIPE_DELETED"
+
+    # Recipe Properties
+    RECIPE_PROPERTY_ADDED = "RECIPE_PROPERTY_ADDED"
+    RECIPE_PROPERTY_UPDATED = "RECIPE_PROPERTY_UPDATED"
+    RECIPE_PROPERTY_DELETED = "RECIPE_PROPERTY_DELETED"
+
+    # Feedback (if feedback system exists)
+    FEEDBACK_CREATED = "FEEDBACK_CREATED"
+    FEEDBACK_UPDATED = "FEEDBACK_UPDATED"
+
+    # Recipe Optimization (if optimization exists)
+    RECIPE_OPTIMIZATION_STARTED = "RECIPE_OPTIMIZATION_STARTED"
+    RECIPE_OPTIMIZATION_COMPLETED = "RECIPE_OPTIMIZATION_COMPLETED"
+    RECIPE_OPTIMIZATION_FAILED = "RECIPE_OPTIMIZATION_FAILED"
+
+    # User Management
+    USER_CREATED = "USER_CREATED"
+    USER_UPDATED = "USER_UPDATED"
+    USER_DEACTIVATED = "USER_DEACTIVATED"
+    USER_ROLE_CHANGED = "USER_ROLE_CHANGED"
+
+
+class AuditEntityType:
+    """Audit entity type constants."""
+
+    USER = "USER"
+    RESEARCH_RUN = "RESEARCH_RUN"
+    REPORT = "REPORT"
+    RECIPE = "RECIPE"
+    RECIPE_PROPERTY = "RECIPE_PROPERTY"
+    FEEDBACK = "FEEDBACK"

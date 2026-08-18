@@ -80,32 +80,63 @@ export function LiteratureReview() {
 
   // Polling logic
   useEffect(() => {
-    if (state.researchRunId && state.status !== "COMPLETED" && state.status !== "COMPLETED_PARTIAL" && state.status !== "FAILED" && state.status !== "CANCELLED") {
+    // Determine if we should poll
+    const isTerminal = (status: string) => {
+      return ["COMPLETED", "COMPLETED_PARTIAL", "FAILED", "CANCELLED", "LLM_PROVIDER_EXHAUSTED"].includes(status);
+    };
+
+    if (state.researchRunId && !isTerminal(state.status)) {
       if (pollingRef.current) clearInterval(pollingRef.current);
       
+      const MAX_POLLS = 600; // 30 minutes at 3s intervals
+      let pollCount = 0;
+
       pollingRef.current = setInterval(async () => {
+        pollCount++;
+        if (pollCount > MAX_POLLS) {
+          console.warn(`[RESEARCH POLL] Run: ${state.researchRunId} Status: TIMEOUT. Polling stopped.`);
+          if (pollingRef.current) clearInterval(pollingRef.current);
+          setState({ error: "Research status could not be confirmed. Check Audit Trail / Research History." });
+          return;
+        }
+
+        console.log(`[RESEARCH POLL] Run: ${state.researchRunId} Status: ${state.status} Next poll: 3s`);
+        
         try {
           const run = await pollResearchStatus(state.researchRunId!);
           setState({ status: run.status });
           
-          if (run.status === "COMPLETED" || run.status === "COMPLETED_PARTIAL") {
-            if (pollingRef.current) clearInterval(pollingRef.current);
-            // Fetch the final HTML report
-            try {
-              const content = await getReportContent(state.researchRunId!);
-              setState({ 
-                reportHtml: content.html, 
-                reportMarkdown: content.markdown,
-                recipeData: content.extractions,
-                extractions: content.extractions,
-                structuredReport: content.structuredReport
-              });
-            } catch (err) {
-              setState({ error: "Failed to load report content." });
+          if (isTerminal(run.status)) {
+            console.log(`[RESEARCH POLL] Run: ${state.researchRunId} Status: ${run.status}`);
+            if (run.status === "LLM_PROVIDER_EXHAUSTED") {
+              console.log(`[RESEARCH POLL] Reason: Provider quota exhausted.`);
+            } else if (run.status === "FAILED") {
+              console.log(`[RESEARCH POLL] Polling stopped. Run failed.`);
+            } else if (run.status === "COMPLETED" || run.status === "COMPLETED_PARTIAL") {
+              console.log(`[RESEARCH POLL] Polling stopped. Run completed.`);
             }
-          } else if (run.status === "FAILED" || run.status === "CANCELLED") {
+
             if (pollingRef.current) clearInterval(pollingRef.current);
-            setState({ error: "Patent research failed or was cancelled by the server." });
+            
+            if (run.status === "COMPLETED" || run.status === "COMPLETED_PARTIAL") {
+              // Fetch the final HTML report
+              try {
+                const content = await getReportContent(state.researchRunId!);
+                setState({ 
+                  reportHtml: content.html, 
+                  reportMarkdown: content.markdown,
+                  recipeData: content.extractions,
+                  extractions: content.extractions,
+                  structuredReport: content.structuredReport
+                });
+              } catch (err) {
+                setState({ error: "Failed to load report content." });
+              }
+            } else if (run.status === "FAILED" || run.status === "CANCELLED") {
+              setState({ error: "Patent research failed or was cancelled by the server." });
+            } else if (run.status === "LLM_PROVIDER_EXHAUSTED") {
+              setState({ error: "LLM Provider quota exhausted. Research stopped." });
+            }
           }
         } catch (error) {
           console.error("Polling error:", error);
@@ -162,6 +193,11 @@ export function LiteratureReview() {
     setIsSubmitting(true);
     setState({ error: null });
     
+    console.log("RESEARCH REQUEST");
+    console.log("----------------");
+    console.log("URL: /api/v1/research-runs");
+    console.log("METHOD: POST");
+    
     try {
       const competitors = competitorInput
         .split(",")
@@ -180,6 +216,16 @@ export function LiteratureReview() {
       };
       
       const mappedJurisdictions = selectedJurisdictions.map(j => j === "EU" ? "EP" : j);
+      
+      console.log("PAYLOAD:", {
+        compound_name: compound.trim(),
+        competitors,
+        patent_sources: selectedSources,
+        mentioned_websites: websites,
+        publication_filter: publicationFilter,
+        jurisdictions: mappedJurisdictions
+      });
+      console.log("REQUEST STARTED: ", new Date().toISOString());
         
       const run = await createResearchRun({
         compound_name: compound.trim(),
@@ -189,6 +235,11 @@ export function LiteratureReview() {
         publication_filter: publicationFilter,
         jurisdictions: mappedJurisdictions
       });
+      
+      console.log("RESEARCH RESPONSE");
+      console.log("-----------------");
+      console.log("STATUS: SUCCESS");
+      console.log("BODY:", run);
       
       setState({ 
         researchRunId: run.id, 
@@ -213,6 +264,10 @@ export function LiteratureReview() {
         }
       }
     } catch (err: any) {
+      console.error("RESEARCH REQUEST FAILED");
+      console.error("-----------------------");
+      console.error("ERROR:", err);
+      console.error("MESSAGE:", err.message);
       setState({ error: err.message || "Failed to start research" });
     } finally {
       setIsSubmitting(false);

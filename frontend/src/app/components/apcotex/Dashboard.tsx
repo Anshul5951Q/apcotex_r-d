@@ -4,6 +4,7 @@ import {
   BookOpen,
   FlaskConical,
   FileText,
+  Activity,
   type LucideIcon,
 } from "lucide-react";
 import { Card } from "../ui/card";
@@ -47,6 +48,14 @@ const MODULES: ModuleCardConfig[] = [
     icon: FileText,
     path: "/audit-trail",
   },
+  {
+    title: "Token Usage",
+    description:
+      "Admin dashboard to monitor LLM token consumption, Serper search API usage, and estimated costs.",
+    buttonText: "View Token Usage",
+    icon: Activity,
+    path: "/token-dashboard",
+  },
 ];
 
 export function Dashboard() {
@@ -54,7 +63,12 @@ export function Dashboard() {
   const { userName, userRole } = useLayoutContext();
 
   const visibleModules = MODULES.filter(
-    (m) => m.path !== "/audit-trail" || userRole === "admin"
+    (m) => {
+      if (m.path === "/audit-trail" || m.path === "/token-dashboard") {
+        return userRole === "admin";
+      }
+      return true;
+    }
   );
 
   return (

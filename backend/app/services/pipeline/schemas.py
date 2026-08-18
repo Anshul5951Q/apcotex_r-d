@@ -26,9 +26,11 @@ class MetadataQualification(str, Enum):
     REJECT = "REJECT"
 
 class ExtractionStatus(str, Enum):
-    FULL = "FULL"
-    PARTIAL = "PARTIAL"
-    FAILED = "FAILED"
+    FULL = "FULL"                          # Both deterministic + LLM succeeded
+    PARTIAL = "PARTIAL"                    # Only deterministic; LLM skipped or found nothing extra
+    FAILED = "FAILED"                      # Complete failure (fetch/parse error)
+    LLM_FAILED = "LLM_FAILED"             # LLM was attempted but failed; deterministic preserved
+    NO_USABLE_EVIDENCE = "NO_USABLE_EVIDENCE"  # Neither deterministic nor LLM found any parameters
 
 from enum import Enum
 
@@ -52,6 +54,11 @@ class SearchPriority(str, Enum):
     PRIMARY = "PRIMARY"
     SECONDARY = "SECONDARY"
     FALLBACK = "FALLBACK"
+
+class TargetAttribute(BaseModel):
+    name: str
+    condition: str
+    terms: list[str]
 
 class SearchQuery(BaseModel):
     query: str
@@ -168,6 +175,11 @@ class ParsedPatent(BaseModel):
     Schema for the deterministic output of the parser stage.
     """
     url: str = ""
+    patent_number: str = Field(description="Canonical patent identifier", default="")
+    title: str = Field(description="Title of the patent", default="")
+    jurisdiction: str = Field(description="Jurisdiction of the patent", default="")
+    publication_date: str = Field(description="Publication date of the patent", default="")
+    assignee: str = Field(description="Assignee of the patent", default="")
     metadata: Dict[str, str] = Field(default_factory=dict)
     abstract: str = ""
     summary: str = ""
@@ -210,31 +222,6 @@ class PatentMetadata(BaseModel):
     quality: str = Field(description="The validation quality of the extraction (High, Medium, Low)", default="Not disclosed")
     extraction_score: int = Field(description="The relative score for candidate sorting", default=0)
 
-class PolymerizationData(BaseModel):
-    process: str = Field(description="The type of polymerization (e.g., emulsion, solution, bulk, suspension)", default="Not disclosed")
-    monomers: str = Field(description="Monomers used in the reaction", default="Not disclosed")
-    monomer_ratio: str = Field(description="Ratio of monomers used", default="Not disclosed")
-    initiator: str = Field(description="Type and amount of initiator/catalyst used", default="Not disclosed")
-    emulsifier: str = Field(description="Type and amount of emulsifier/surfactant used", default="Not disclosed")
-    catalyst: str = Field(description="Type and amount of catalyst", default="Not disclosed")
-    chain_transfer_agent: str = Field(description="Type and amount of chain transfer agent / modifier", default="Not disclosed")
-    coagulation: str = Field(description="Coagulation/flocculation process details", default="Not disclosed")
-    water_amount: str = Field(description="Amount of water or aqueous medium used", default="Not disclosed")
-
-class ReactionConditions(BaseModel):
-    temperature: str = Field(description="Polymerization reaction temperature", default="Not disclosed")
-    time: str = Field(description="Duration of the polymerization reaction", default="Not disclosed")
-    pressure: str = Field(description="Reaction pressure", default="Not disclosed")
-    ph: str = Field(description="Reaction pH", default="Not disclosed")
-    conversion: str = Field(description="Final monomer conversion percentage", default="Not disclosed")
-
-class PropertiesData(BaseModel):
-    solid_content: str = Field(description="Solid content percentage", default="Not disclosed")
-    mooney_viscosity: str = Field(description="Mooney viscosity", default="Not disclosed")
-    volatile_matter: str = Field(description="Volatile matter content", default="Not disclosed")
-    ash: str = Field(description="Ash content", default="Not disclosed")
-    other_properties: str = Field(description="Other key properties of the resulting polymer", default="Not disclosed")
-
 class ExamplesData(BaseModel):
     example_tables: list[str] = Field(description="Extracted tables related to examples", default_factory=list)
     reaction_procedure: str = Field(description="The specific steps and procedure for the reaction", default="Not disclosed")
@@ -245,9 +232,6 @@ class PatentExtraction(BaseModel):
     Final Schema for extracting structured polymerization data from a single patent.
     """
     metadata: PatentMetadata = Field(default_factory=PatentMetadata)
-    polymerization: PolymerizationData = Field(default_factory=PolymerizationData)
-    reaction_conditions: ReactionConditions = Field(default_factory=ReactionConditions)
-    properties: PropertiesData = Field(default_factory=PropertiesData)
     experimental_notes: ExamplesData = Field(default_factory=ExamplesData)
     claims: list[str] = Field(description="Independent claims of the patent", default_factory=list)
     parameters: list[ExtractedParameterSchema] = Field(default_factory=list)
@@ -258,32 +242,60 @@ class ExtractionResult(BaseModel):
     patent_number: str
     extraction: PatentExtraction
 
+class LLMCompoundSearchProfile(BaseModel):
+    """
+    Compact, LLM-facing schema for generating query expansion profiles.
+    Used exclusively to minimize token usage.
+    """
+    compound_name: str = Field(description="The normalized primary chemical name (e.g., 'Ethylene Propylene Diene Monomer').")
+    base_chemistry: str = Field(description="The core base chemistry for the target material, excluding constraints.")
+    target_attributes: list[TargetAttribute] = Field(default_factory=list, description="Specific target attributes identified from the input.")
+    synonyms: list[str] = Field(description="A broad list of synonyms and acronyms (e.g., ['EPDM', 'Ethylene-Propylene-Diene']).")
+    material_aliases: list[str] = Field(default_factory=list, description="Broader list of aliases, abbreviations, and exact names for the material.")
+    precursor_terms: list[str] = Field(default_factory=list, description="Raw materials, monomers, or precursor polymers used to create the target material (e.g., ['NBR', 'nitrile rubber'] for HNBR).")
+    transformation_terms: list[str] = Field(default_factory=list, description="Processes used to transform the precursor into the target material (e.g., ['hydrogenation', 'crosslinking']).")
+    manufacturing_intent: str = Field(default="", description="The research intent (e.g., 'polymerization', 'preparation', 'synthesis').")
+    synthesis_terms: list[str] = Field(default_factory=list, description="Dynamic synthesis or manufacturing terms derived from the input (e.g., ['polymerization', 'copolymerization', 'preparation']).")
+    downstream_application_terms: list[str] = Field(default_factory=list, description="Terms indicating downstream application or compounding rather than synthesis (e.g., ['article', 'glove', 'vulcanization', 'compound']).")
+    relevant_parameter_categories: list[str] = Field(default_factory=list, description="Specific technical parameter categories highly relevant to this chemistry (e.g., ['catalyst', 'temperature', 'monomer ratio', 'conversion']).")
+    derivative_exclusion_terms: list[str] = Field(default_factory=list, description="Specific chemical derivatives or modifications that should be EXCLUDED unless explicitly requested (e.g. ['HNBR', 'hydrogenated NBR', 'carboxylated NBR'] for a pure NBR query).")
+    search_queries: list[str] = Field(default_factory=list, description="Dynamically generated search query strings.")
+
 class CompoundSearchProfile(BaseModel):
     """
-    Schema for dynamic compound search profiles generated by the CompoundIntelligenceService.
-    Replaces static/hardcoded compound rules.
+    Internal pipeline schema containing deterministic sets derived from the LLM output.
+    This schema is NEVER sent back to the LLM as a JSON schema.
     """
-    original_input: str = Field(default="", description="The exact user-entered input string (preserved for traceability).")
-    compound: str = Field(description="The user's raw input compound.")
-    compound_name: str = Field(description="The normalized primary chemical name (e.g., 'Ethylene Propylene Diene Monomer').")
-    synonyms: list[str] = Field(description="A broad list of synonyms and acronyms (e.g., ['EPDM', 'Ethylene-Propylene-Diene']).")
-    abbreviations: list[str] = Field(description="Known abbreviations.")
-    chemical_family: str = Field(description="The broad polymer family (e.g., 'EPDM', 'NBR', 'Fluoropolymer').")
-    major_monomers: list[str] = Field(description="The individual monomers comprising this compound.")
-    alternative_industry_names: list[str] = Field(description="Trade names or alternative industry names.")
-    important_constraints: list[str] = Field(default_factory=list, description="Critical constraints from the original input that must be preserved (e.g., ['low acrylonitrile', 'high cis']).")
-    research_intent: str = Field(default="", description="The research intent (e.g., 'polymerization', 'preparation', 'synthesis').")
-    typical_polymerization_routes: list[str] = Field(description="Specific polymerization processes typically used (e.g., ['solution polymerization', 'Ziegler-Natta']).")
-    typical_manufacturing_keywords: list[str] = Field(description="Common manufacturing terms (e.g., 'method for manufacturing', 'process for producing').")
-    typical_cpc: list[str] = Field(description="Preferred CPC patent classes (e.g., ['C08F', 'C08L']).")
-    typical_ipc: list[str] = Field(description="Preferred IPC patent classes.")
-    related_chemistry: list[str] = Field(description="Chemicals or compounds often found alongside or related to the target.")
-    competing_chemistry: list[str] = Field(description="Alternative compounds that indicate the patent is likely NOT about the target compound (e.g., if target is CR, competing might be NBR, SBR).")
-    application_keywords: list[str] = Field(description="Negative signals indicating out-of-scope applications or downstream products (e.g., 'glove', 'tire', 'film', 'battery', 'adhesive').")
-    manufacturing_keywords: list[str] = Field(description="Words highly indicative of raw synthesis (e.g., 'initiator', 'emulsifier', 'reactor', 'conversion', 'catalyst').")
-    target_composition_keywords: list[str] = Field(default_factory=list, description="Keywords indicating target composition or property (e.g., ['acrylonitrile', 'ACN']).")
-    target_composition_range: str = Field(default="", description="The target numerical range for the composition (e.g., '18-24%').")
-    search_queries: list[SearchQuery] = Field(default_factory=list, description="Dynamically generated search queries.")
+    original_input: str = ""
+    compound: str = ""
+    compound_name: str = ""
+    base_chemistry: str = ""
+    synonyms: list[str] = Field(default_factory=list)
+    abbreviations: list[str] = Field(default_factory=list)
+    material_aliases: list[str] = Field(default_factory=list)
+    precursor_terms: list[str] = Field(default_factory=list)
+    transformation_terms: list[str] = Field(default_factory=list)
+    chemical_family: str = ""
+    major_monomers: list[str] = Field(default_factory=list)
+    alternative_industry_names: list[str] = Field(default_factory=list)
+    important_constraints: list[str] = Field(default_factory=list)
+    target_attributes: list[TargetAttribute] = Field(default_factory=list)
+    research_intent: str = ""
+    synthesis_terms: list[str] = Field(default_factory=list)
+    downstream_application_terms: list[str] = Field(default_factory=list)
+    typical_polymerization_routes: list[str] = Field(default_factory=list)
+    typical_manufacturing_keywords: list[str] = Field(default_factory=list)
+    typical_cpc: list[str] = Field(default_factory=list)
+    typical_ipc: list[str] = Field(default_factory=list)
+    related_chemistry: list[str] = Field(default_factory=list)
+    competing_chemistry: list[str] = Field(default_factory=list)
+    application_keywords: list[str] = Field(default_factory=list)
+    manufacturing_keywords: list[str] = Field(default_factory=list)
+    target_composition_keywords: list[str] = Field(default_factory=list)
+    target_composition_range: str = ""
+    relevant_parameter_categories: list[str] = Field(default_factory=list)
+    derivative_exclusion_terms: list[str] = Field(default_factory=list)
+    search_queries: list[SearchQuery] = Field(default_factory=list)
 
 class ReportExampleEvidence(BaseModel):
     example_id: str
@@ -303,6 +315,12 @@ class ReportPatentEvidence(BaseModel):
     examples: list[ReportExampleEvidence] = Field(default_factory=list)
     technical_findings: list[str] = Field(default_factory=list)
     limitations_or_missing_data: list[str] = Field(default_factory=list)
+    # Source text: abstract + deterministically-extracted relevant passages.
+    # Used as the primary evidence carrier when structured parameter extraction yields 0 params.
+    source_text: str = Field(default="", description="Relevant source passages (abstract, synthesis sections, examples text)")
+    relevance_tier: str = Field(default="", description="Relevance tier from title screening: STRONG, MEDIUM, or WEAK")
+    relevance_score: float = Field(default=0.0, description="Numeric relevance score from title screening")
+
 
 class ReportPatentDetails(BaseModel):
     patent_number: str = Field(description="The formal patent publication number (e.g., US1234567A)")
@@ -310,29 +328,14 @@ class ReportPatentDetails(BaseModel):
     assignee: str | None = Field(default=None, description="The company or assignee who owns the patent")
     jurisdiction: str | None = Field(default=None, description="The country or jurisdiction of the patent (e.g., US, EP, WO)")
     publication_year: str | None = Field(default=None, description="The year the patent was published")
+    priority_date: str | None = Field(default=None, description="The priority date of the patent, if available")
+    legal_status: str | None = Field(default=None, description="The legal status (Active, Expired, etc.)")
     polymer_type: str | None = Field(default=None, description="The type of polymer synthesized")
     relevance_to_target: str = Field(default="Not disclosed", description="Why this patent is relevant to the target compound")
+    relevance_tier: str = Field(default="PRIMARY", description="Classification tier: PRIMARY or SECONDARY")
 
 class ReportPatentMethodology(BaseModel):
-    polymerization_process: str | None = Field(default=None, description="Polymerization process (e.g., emulsion polymerization)")
-    monomer_system: str | None = Field(default=None, description="Monomer system used")
-    monomer_ratio: str | None = Field(default=None, description="Exact monomer ratio or contents")
-    water_amount: str | None = Field(default=None, description="Water amount")
-    emulsifier: str | None = Field(default=None, description="Emulsifier used")
-    emulsifier_loading: str | None = Field(default=None, description="Emulsifier loading")
-    initiator: str | None = Field(default=None, description="Initiator used")
-    initiator_loading: str | None = Field(default=None, description="Initiator loading")
-    catalyst_activator: str | None = Field(default=None, description="Catalyst / activator used")
-    chain_transfer_agent: str | None = Field(default=None, description="Chain-transfer agent used")
-    chain_transfer_dosage: str | None = Field(default=None, description="Chain-transfer dosage")
-    polymerization_temperature: str | None = Field(default=None, description="Polymerization temperature")
-    pressure: str | None = Field(default=None, description="Pressure")
-    ph: str | None = Field(default=None, description="pH")
-    reaction_time: str | None = Field(default=None, description="Reaction time")
-    conversion: str | None = Field(default=None, description="Conversion")
-    coagulation_conditions: str | None = Field(default=None, description="Coagulation conditions")
-    post_treatment: str | None = Field(default=None, description="Post-treatment")
-    raw_polymer_properties: str | None = Field(default=None, description="Raw polymer properties")
+    dynamic_parameters: list[str] = Field(description="Dynamically extracted reaction parameters formatted as 'Key: Value'")
 
 class ReportPatent(BaseModel):
     patent_details: ReportPatentDetails
@@ -343,9 +346,21 @@ class ReportPatent(BaseModel):
 class PatentResearchReport(BaseModel):
     title: str | None = Field(default=None, description="Title of the report")
     abstract: str | None = Field(default=None, description="Abstract of the report")
-    methodology_patents: list[ReportPatent] = Field(description="List of extracted patents and their methodologies", default_factory=list)
-    cross_patent_comparison: list[str] = Field(description="Cross-patent comparison and synthesis trends (concise bullet points)", default_factory=list)
-    references: list[str] = Field(description="List of references (only the selected patents with URLs)", default_factory=list)
+    methodology_patents: list[ReportPatent] = Field(description="List of extracted patents (PRIMARY tier)", default_factory=list)
+    cross_patent_comparison: list[str] = Field(description="Cross-patent comparison and synthesis trends (only when >= 2 PRIMARY patents)", default_factory=list)
+    conclusion: str | None = Field(default=None, description="Conclusion of the report")
+    references: list[str] = Field(description="References from validated evidence only", default_factory=list)
+
+class LLMPatentResearchReport(BaseModel):
+    """
+    Schema for the LLM to output the abstract, cross-comparison, and conclusion.
+    The methodology_patents array is deterministically injected by the orchestrator.
+    """
+    title: str | None = Field(default=None, description="Title of the report")
+    abstract: str | None = Field(default=None, description="Abstract of the report")
+    cross_patent_comparison: list[str] = Field(description="Cross-patent comparison and synthesis trends (only when >= 2 PRIMARY patents)", default_factory=list)
+    conclusion: str | None = Field(default=None, description="Conclusion of the report")
+    references: list[str] = Field(description="References from validated evidence only", default_factory=list)
 
 class PatentBatchFindings(BaseModel):
     patent_number: str

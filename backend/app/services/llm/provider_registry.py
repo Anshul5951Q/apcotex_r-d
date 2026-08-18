@@ -25,11 +25,11 @@ PROVIDER_DEFINITIONS = {
     },
     "openai": {
         "name": "OpenAI",
-        "description": "OpenAI (gpt-4o-mini)",
+        "description": "OpenAI (gpt-5.4-mini)",
         "capabilities": ["Patent Analysis", "Recipe Generation", "Report Generation"],
         "env_key": "OPENAI_API_KEY",
         "base_url": "https://api.openai.com/v1",
-        "model": "gpt-4o-mini",
+        "model": "gpt-5.4-mini",
     },
     "grok": {
         "name": "Grok",

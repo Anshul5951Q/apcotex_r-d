@@ -1,22 +1,15 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, History } from "lucide-react";
 import { usePatentResearch } from "../../contexts/PatentResearchContext";
-import type { PatentResearchReport } from "../../contexts/PatentResearchContext";
-import {
-  DEFAULT_CUSTOMER_FEEDBACK,
-  POLYMERIZATION_RECIPES,
-  convertToEditableRecipe,
-  type EditableRecipe,
-  type RecipeProperty,
-  type TransferredSpecData,
-} from "./recipeSimulatorDemoData";
+import { useRecipe } from "../../contexts/RecipeContext";
 import {
   Step1TargetSpec,
   Step2PolymerizationRecommendations,
   Step3CustomerTrialFeedback,
   Step4OptimizedRecipes,
 } from "./RecipeSimulatorSteps";
+import { TransferredSpecData } from "./recipeSimulatorDemoData";
 
 const BLUE = "#1F5FA8";
 const TEAL = "#1FB7B5";
@@ -116,108 +109,120 @@ function Stepper({ current }: { current: number }) {
 
 export function RecipeSimulator() {
   const navigate = useNavigate();
-  const { state } = usePatentResearch();
-  const recipeData = state.recipeData;
+  const { state: researchState } = usePatentResearch();
+  
+  const { 
+    cycle, 
+    resetContext, 
+    error
+  } = useRecipe();
+
+  // Local state for the UI step (driven by cycle status if loaded)
   const [step, setStep] = useState(1);
-  const [transferredData, setTransferredData] =
-    useState<TransferredSpecData | null>(null);
-  const [selectedRecipeId, setSelectedRecipeId] = useState("recipe-2");
-  const [patentResearchInput, setPatentResearchInput] =
-    useState<any | null>(recipeData);
-  const [editableRecipes, setEditableRecipes] = useState<EditableRecipe[]>(() =>
-    POLYMERIZATION_RECIPES.map(convertToEditableRecipe)
-  );
 
-  const updateRecipeProperty = (recipeId: string, propertyId: string, updates: Partial<RecipeProperty>) => {
-    setEditableRecipes((prev) =>
-      prev.map((r) =>
-        r.id === recipeId
-          ? {
-              ...r,
-              properties: r.properties.map((p) =>
-                p.id === propertyId ? { ...p, ...updates } : p
-              ),
-            }
-          : r
-      )
-    );
-  };
-
-  const addRecipeProperty = (recipeId: string, property: RecipeProperty) => {
-    setEditableRecipes((prev) =>
-      prev.map((r) =>
-        r.id === recipeId
-          ? { ...r, properties: [...r.properties, property] }
-          : r
-      )
-    );
-  };
-
-  const deleteRecipeProperty = (recipeId: string, propertyId: string) => {
-    setEditableRecipes((prev) =>
-      prev.map((r) =>
-        r.id === recipeId
-          ? {
-              ...r,
-              properties: r.properties.filter((p) => p.id !== propertyId),
-            }
-          : r
-      )
-    );
-  };
-
-  const resetRecipe = (recipeId: string) => {
-    const original = POLYMERIZATION_RECIPES.find((r) => r.id === recipeId);
-    if (original) {
-      setEditableRecipes((prev) =>
-        prev.map((r) =>
-          r.id === recipeId ? convertToEditableRecipe(original) : r
-        )
-      );
-    }
-  };
-
+  // Sync step with cycle status
   useEffect(() => {
-    if (recipeData) {
-      setPatentResearchInput(recipeData);
+    if (!cycle) {
+      setStep(1);
     } else {
-      setPatentResearchInput(null);
+      switch (cycle.status) {
+        case "PENDING":
+        case "STEP1":
+        case "GENERATING":
+          setStep(2); // If we're generating or have entered step 1, proceed to 2
+          break;
+        case "STEP2":
+          setStep(2);
+          break;
+        case "STEP3":
+        case "OPTIMIZING":
+          setStep(3);
+          break;
+        case "STEP4":
+        case "COMPLETED":
+          setStep(4);
+          break;
+        default:
+          setStep(1);
+      }
     }
-  }, [recipeData]);
-
-  const selectedRecipe =
-    editableRecipes.find((recipe) => recipe.id === selectedRecipeId) ??
-    editableRecipes[1];
+  }, [cycle]);
 
   return (
     <div style={{ padding: "28px 32px 48px" }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1
-          style={{
-            color: BLUE,
-            fontSize: "1.25rem",
-            fontWeight: 700,
-            marginBottom: 4,
-          }}
-        >
-          Recipe Simulator
-        </h1>
-        <p style={{ color: "#6B7280", fontSize: "0.875rem" }}>
-          AI-powered formulation prediction · Step {step} of {STEPS.length}
-        </p>
+      <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <h1
+            style={{
+              color: BLUE,
+              fontSize: "1.25rem",
+              fontWeight: 700,
+              marginBottom: 4,
+            }}
+          >
+            Recipe Simulator
+          </h1>
+          <p style={{ color: "#6B7280", fontSize: "0.875rem" }}>
+            AI-powered formulation prediction · Step {step} of {STEPS.length}
+          </p>
+        </div>
+        
+        <div style={{ display: 'flex', gap: 12 }}>
+          <button
+            onClick={() => navigate('/recipe-history')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              background: 'white',
+              border: `1px solid #E5E7EB`,
+              borderRadius: 6,
+              padding: '8px 16px',
+              fontSize: '0.875rem',
+              fontWeight: 600,
+              color: '#374151',
+              cursor: 'pointer'
+            }}
+          >
+            <History size={16} />
+            Previous Recipes
+          </button>
+          
+          <button
+            onClick={() => {
+              if(confirm("Start a new recipe simulation? Unsaved progress will be lost.")) {
+                resetContext();
+                setStep(1);
+              }
+            }}
+            style={{
+              background: TEAL,
+              border: 'none',
+              borderRadius: 6,
+              padding: '8px 16px',
+              fontSize: '0.875rem',
+              fontWeight: 600,
+              color: 'white',
+              cursor: 'pointer'
+            }}
+          >
+            Generate New Recipe
+          </button>
+        </div>
       </div>
 
       <Stepper current={step} />
+      
+      {error && (
+        <div style={{ background: '#FEE2E2', border: '1px solid #FCA5A5', color: '#991B1B', padding: 12, borderRadius: 6, marginBottom: 24 }}>
+          {error}
+        </div>
+      )}
 
       {step === 1 && (
         <Step1TargetSpec
           onBack={() => navigate("/literature-review")}
-          onContinue={(data) => {
-            setTransferredData(data);
-            setStep(2);
-          }}
-          transferredData={transferredData}
-          patentResearchReport={patentResearchInput}
+          onContinue={() => setStep(2)}
         />
       )}
 
@@ -225,13 +230,6 @@ export function RecipeSimulator() {
         <Step2PolymerizationRecommendations
           onBack={() => setStep(1)}
           onContinue={() => setStep(3)}
-          selectedRecipeId={selectedRecipeId}
-          onSelectRecipe={setSelectedRecipeId}
-          recipes={editableRecipes}
-          onUpdateProperty={updateRecipeProperty}
-          onAddProperty={addRecipeProperty}
-          onDeleteProperty={deleteRecipeProperty}
-          onResetRecipe={resetRecipe}
         />
       )}
 
@@ -239,13 +237,13 @@ export function RecipeSimulator() {
         <Step3CustomerTrialFeedback
           onBack={() => setStep(2)}
           onOptimize={() => setStep(4)}
-          selectedRecipeName={selectedRecipe.name}
-          transferredData={transferredData}
         />
       )}
 
       {step === 4 && (
-        <Step4OptimizedRecipes onBack={() => setStep(3)} />
+        <Step4OptimizedRecipes 
+          onBack={() => setStep(3)} 
+        />
       )}
     </div>
   );
